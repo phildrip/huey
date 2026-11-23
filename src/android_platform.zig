@@ -121,6 +121,7 @@ pub const KeepScreenOnState = struct {
 
 const AWINDOW_FLAG_KEEP_SCREEN_ON: u32 = 0x00000080;
 const ANATIVEACTIVITY_SHOW_SOFT_INPUT_IMPLICIT: u32 = 0x0001;
+const ANATIVEACTIVITY_SHOW_SOFT_INPUT_FORCED: u32 = 0x0002;
 
 const JNI_VERSION_1_6: i32 = 0x00010006;
 const JNI_OK: i32 = 0;
@@ -202,7 +203,7 @@ const JNINativeInterface = extern struct {
     CallObjectMethodA: ?*const fn (JNIEnvPtr, jobject, jmethodID, [*]const jvalue) callconv(.c) jobject,
     CallBooleanMethod: ?*const anyopaque,
     CallBooleanMethodV: ?*const anyopaque,
-    CallBooleanMethodA: ?*const anyopaque,
+    CallBooleanMethodA: ?*const fn (JNIEnvPtr, jobject, jmethodID, [*]const jvalue) callconv(.c) jboolean,
     CallByteMethod: ?*const anyopaque,
     CallByteMethodV: ?*const anyopaque,
     CallByteMethodA: ?*const anyopaque,
@@ -537,15 +538,120 @@ pub const AndroidBridge = struct {
     }
 
     /// Requests the Android soft input keyboard to show implicitly for `ANativeActivity*`.
+    /// Requests the Android soft input keyboard to show for `ANativeActivity*`.
+    /// Uses JNI `InputMethodManager.toggleSoftInput(SHOW_FORCED, 0)` because
+    /// `ANativeActivity_showSoftInput(..., SHOW_IMPLICIT)` is silently ignored on
+    /// pure `NativeActivity` views across Android 7–14.
     pub fn showSoftInputNative(activity: *anyopaque) void {
         if (comptime !is_android) return;
-        NdkNativeActivity.ANativeActivity_showSoftInput(activity, ANATIVEACTIVITY_SHOW_SOFT_INPUT_IMPLICIT);
+        if (!toggleSoftInputJni(activity, true)) {
+            NdkNativeActivity.ANativeActivity_showSoftInput(activity, ANATIVEACTIVITY_SHOW_SOFT_INPUT_FORCED);
+        }
     }
 
     /// Requests the Android soft input keyboard to hide for `ANativeActivity*`.
     pub fn hideSoftInputNative(activity: *anyopaque) void {
         if (comptime !is_android) return;
-        NdkNativeActivity.ANativeActivity_hideSoftInput(activity, 0);
+        if (!toggleSoftInputJni(activity, false)) {
+            NdkNativeActivity.ANativeActivity_hideSoftInput(activity, 0);
+        }
+    }
+
+    fn toggleSoftInputJni(activity: *anyopaque, show: bool) bool {
+        if (comptime !is_android) return false;
+        const act: *const ANativeActivity = @ptrCast(@alignCast(activity));
+        const vm = act.vm orelse return false;
+        const act_obj = act.clazz orelse return false;
+
+        var env_raw: ?*anyopaque = null;
+        var attached = false;
+        const get_env = vm.*.*.GetEnv orelse return false;
+        const env_rc = get_env(vm, &env_raw, JNI_VERSION_1_6);
+        var env_opt: ?JNIEnvPtr = if (env_raw) |ptr| @ptrCast(@alignCast(ptr)) else null;
+        if (env_rc == JNI_EDETACHED) {
+            const attach = vm.*.*.AttachCurrentThread orelse return false;
+            if (attach(vm, &env_opt, null) != JNI_OK) return false;
+            attached = true;
+        } else if (env_rc != JNI_OK) {
+            return false;
+        }
+        defer if (attached) {
+            if (vm.*.*.DetachCurrentThread) |detach| _ = detach(vm);
+        };
+
+        const env = env_opt orelse return false;
+        const exc_check = env.*.*.ExceptionCheck orelse return false;
+        if (exc_check(env) != 0) return false;
+
+        const new_str_utf = env.*.*.NewStringUTF orelse return false;
+        const get_obj_class = env.*.*.GetObjectClass orelse return false;
+        const get_mid = env.*.*.GetMethodID orelse return false;
+        const call_obj = env.*.*.CallObjectMethodA orelse return false;
+        const call_void = env.*.*.CallVoidMethodA orelse return false;
+
+        const service_name = new_str_utf(env, "input_method");
+        defer deleteLocalRef(env, service_name);
+        if (clearJniException(env) or service_name == null) return false;
+
+        const act_cls = get_obj_class(env, act_obj);
+        defer deleteLocalRef(env, act_cls);
+        if (clearJniException(env) or act_cls == null) return false;
+
+        const get_sys_svc = get_mid(env, act_cls, "getSystemService", "(Ljava/lang/String;)Ljava/lang/Object;");
+        if (clearJniException(env) or get_sys_svc == null) return false;
+
+        const svc_args = [_]jvalue{.{ .l = service_name }};
+        const imm_obj = call_obj(env, act_obj, get_sys_svc, &svc_args);
+        defer deleteLocalRef(env, imm_obj);
+        if (clearJniException(env) or imm_obj == null) return false;
+
+        const imm_cls = get_obj_class(env, imm_obj);
+        defer deleteLocalRef(env, imm_cls);
+        if (clearJniException(env) or imm_cls == null) return false;
+
+        if (show) {
+            // InputMethodManager.toggleSoftInput(SHOW_FORCED=2, 0)
+            const toggle_mid = get_mid(env, imm_cls, "toggleSoftInput", "(II)V");
+            if (clearJniException(env) or toggle_mid == null) return false;
+            const args = [_]jvalue{ .{ .i = 2 }, .{ .i = 0 } };
+            call_void(env, imm_obj, toggle_mid, &args);
+            return !clearJniException(env);
+        } else {
+            // InputMethodManager.hideSoftInputFromWindow(activity.getWindow().getDecorView().getWindowToken(), 0)
+            const no_args = [_]jvalue{.{ .i = 0 }};
+            const get_win_mid = get_mid(env, act_cls, "getWindow", "()Landroid/view/Window;");
+            if (clearJniException(env) or get_win_mid == null) return false;
+            const win_obj = call_obj(env, act_obj, get_win_mid, &no_args);
+            defer deleteLocalRef(env, win_obj);
+            if (clearJniException(env) or win_obj == null) return false;
+
+            const win_cls = get_obj_class(env, win_obj);
+            defer deleteLocalRef(env, win_cls);
+            if (clearJniException(env) or win_cls == null) return false;
+
+            const get_decor_mid = get_mid(env, win_cls, "getDecorView", "()Landroid/view/View;");
+            if (clearJniException(env) or get_decor_mid == null) return false;
+            const decor_obj = call_obj(env, win_obj, get_decor_mid, &no_args);
+            defer deleteLocalRef(env, decor_obj);
+            if (clearJniException(env) or decor_obj == null) return false;
+
+            const decor_cls = get_obj_class(env, decor_obj);
+            defer deleteLocalRef(env, decor_cls);
+            if (clearJniException(env) or decor_cls == null) return false;
+
+            const get_tok_mid = get_mid(env, decor_cls, "getWindowToken", "()Landroid/os/IBinder;");
+            if (clearJniException(env) or get_tok_mid == null) return false;
+            const tok_obj = call_obj(env, decor_obj, get_tok_mid, &no_args);
+            defer deleteLocalRef(env, tok_obj);
+            if (clearJniException(env) or tok_obj == null) return false;
+
+            const hide_mid = get_mid(env, imm_cls, "hideSoftInputFromWindow", "(Landroid/os/IBinder;I)Z");
+            if (clearJniException(env) or hide_mid == null) return false;
+            const call_bool = env.*.*.CallBooleanMethodA orelse return false;
+            const hide_args = [_]jvalue{ .{ .l = tok_obj }, .{ .i = 0 } };
+            _ = call_bool(env, imm_obj, hide_mid, &hide_args);
+            return !clearJniException(env);
+        }
     }
 
     /// Triggers bounded haptic feedback via Android `Vibrator` / `VibrationEffect` over JNI.
