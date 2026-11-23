@@ -42,7 +42,8 @@ fn sokolLogger(
     );
 }
 
-pub const MAX_QUADS: usize = 256;
+pub const MAX_QUADS: usize = 2048;
+pub const DEFAULT_ATLAS_SIZE: u32 = 1024;
 
 const VsParams = extern struct {
     u_viewport: [2]f32,
@@ -65,12 +66,14 @@ const vs_source: [*:0]const u8 =
     \\
     \\layout(location = 0) in vec2 a_pos;
     \\layout(location = 1) in vec4 a_pos_size;
-    \\layout(location = 2) in vec4 a_color;
-    \\layout(location = 3) in vec4 a_border_color;
-    \\layout(location = 4) in vec4 a_params;
+    \\layout(location = 2) in vec4 a_uv_rect;
+    \\layout(location = 3) in vec4 a_color;
+    \\layout(location = 4) in vec4 a_border_color;
+    \\layout(location = 5) in vec4 a_params;
     \\
     \\out vec2 v_local_px;
     \\out vec2 v_half_size;
+    \\out vec2 v_uv;
     \\out vec4 v_color;
     \\out vec4 v_border_color;
     \\out vec4 v_params;
@@ -78,8 +81,9 @@ const vs_source: [*:0]const u8 =
     \\void main() {
     \\    vec2 half_size = max(a_pos_size.zw, vec2(0.0)) * 0.5;
     \\    vec2 center = a_pos_size.xy + half_size;
-    \\    float blur = max(a_params.z, 0.0);
-    \\    float pad = blur * 1.5 + 2.0;
+    \\    bool is_glyph = a_params.w > 0.5;
+    \\    float blur = is_glyph ? 0.0 : max(a_params.z, 0.0);
+    \\    float pad = is_glyph ? 0.0 : (blur * 1.5 + 2.0);
     \\    vec2 expanded_half = half_size + vec2(pad);
     \\    vec2 local_px = (a_pos * 2.0 - 1.0) * expanded_half;
     \\    vec2 frag_px = center + local_px;
@@ -90,6 +94,7 @@ const vs_source: [*:0]const u8 =
     \\
     \\    v_local_px = local_px;
     \\    v_half_size = half_size;
+    \\    v_uv = mix(a_uv_rect.xy, a_uv_rect.zw, a_pos);
     \\    v_color = a_color;
     \\    v_border_color = a_border_color;
     \\    v_params = vec4(max(a_params.x, 0.0), max(a_params.y, 0.0), blur, a_params.w);
@@ -100,8 +105,11 @@ const fs_source: [*:0]const u8 =
     \\#version 300 es
     \\precision highp float;
     \\
+    \\uniform sampler2D u_atlas;
+    \\
     \\in vec2 v_local_px;
     \\in vec2 v_half_size;
+    \\in vec2 v_uv;
     \\in vec4 v_color;
     \\in vec4 v_border_color;
     \\in vec4 v_params;
@@ -114,6 +122,16 @@ const fs_source: [*:0]const u8 =
     \\}
     \\
     \\void main() {
+    \\    if (v_params.w > 0.5) {
+    \\        float cov = texture(u_atlas, v_uv).r;
+    \\        float out_a = v_color.a * cov;
+    \\        if (out_a < 0.001) {
+    \\            discard;
+    \\        }
+    \\        frag_color = vec4(v_color.rgb, out_a);
+    \\        return;
+    \\    }
+    \\
     \\    float radius = min(max(v_params.x, 0.0), min(v_half_size.x, v_half_size.y));
     \\    float bw = max(v_params.y, 0.0);
     \\    float blur = max(v_params.z, 0.0);
@@ -150,10 +168,29 @@ pub const Renderer = struct {
     initialized: bool = false,
     vbuf: sg.sg_buffer = .{ .id = 0 },
     ibuf: sg.sg_buffer = .{ .id = 0 },
+    atlas_staging: sg.sg_buffer = .{ .id = 0 },
+    atlas_img: sg.sg_image = .{ .id = 0 },
+    atlas_view: sg.sg_view = .{ .id = 0 },
+    atlas_smp: sg.sg_sampler = .{ .id = 0 },
     shd: sg.sg_shader = .{ .id = 0 },
     pip: sg.sg_pipeline = .{ .id = 0 },
+    atlas_w: u32 = DEFAULT_ATLAS_SIZE,
+    atlas_h: u32 = DEFAULT_ATLAS_SIZE,
 
-    pub fn init() !Renderer {
+    pub fn init(atlas_w: u32, atlas_h: u32) !Renderer {
+        const eff_w: u32 = if (atlas_w > 0) atlas_w else DEFAULT_ATLAS_SIZE;
+        const eff_h: u32 = if (atlas_h > 0) atlas_h else DEFAULT_ATLAS_SIZE;
+        const max_c_int: usize = @intCast(std.math.maxInt(c_int));
+        if (eff_w > max_c_int or eff_h > max_c_int) {
+            return error.InvalidAtlasSize;
+        }
+        const atlas_bytes = std.math.mul(usize, @as(usize, eff_w), @as(usize, eff_h)) catch {
+            return error.InvalidAtlasSize;
+        };
+        if (atlas_bytes > max_c_int) {
+            return error.InvalidAtlasSize;
+        }
+
         var desc = std.mem.zeroes(sg.sg_desc);
         desc.environment.defaults.color_format = sg.SG_PIXELFORMAT_RGBA8;
         desc.environment.defaults.depth_format = sg.SG_PIXELFORMAT_NONE;
@@ -182,14 +219,52 @@ pub const Renderer = struct {
         ibuf_desc.label = "uberquad_instances";
         const ibuf = sg.sg_make_buffer(&ibuf_desc);
 
+        var stg_desc = std.mem.zeroes(sg.sg_buffer_desc);
+        stg_desc.size = atlas_bytes;
+        stg_desc.usage = .{
+            .staging_buffer = true,
+            .write_transient = true,
+            .copy_src = true,
+        };
+        stg_desc.label = "glyph_atlas_staging";
+        const atlas_staging = sg.sg_make_buffer(&stg_desc);
+
+        var img_desc = std.mem.zeroes(sg.sg_image_desc);
+        img_desc.type = sg.SG_IMAGETYPE_2D;
+        img_desc.usage.copy_dst = true;
+        img_desc.width = @intCast(eff_w);
+        img_desc.height = @intCast(eff_h);
+        img_desc.num_slices = 1;
+        img_desc.num_mipmaps = 1;
+        img_desc.pixel_format = sg.SG_PIXELFORMAT_R8;
+        img_desc.sample_count = 1;
+        img_desc.label = "glyph_atlas_img";
+        const atlas_img = sg.sg_make_image(&img_desc);
+
+        var view_desc = std.mem.zeroes(sg.sg_view_desc);
+        view_desc.texture.image = atlas_img;
+        view_desc.label = "glyph_atlas_view";
+        const atlas_view = sg.sg_make_view(&view_desc);
+
+        var smp_desc = std.mem.zeroes(sg.sg_sampler_desc);
+        smp_desc.min_filter = sg.SG_FILTER_LINEAR;
+        smp_desc.mag_filter = sg.SG_FILTER_LINEAR;
+        smp_desc.mipmap_filter = sg.SG_FILTER_NEAREST;
+        smp_desc.wrap_u = sg.SG_WRAP_CLAMP_TO_EDGE;
+        smp_desc.wrap_v = sg.SG_WRAP_CLAMP_TO_EDGE;
+        smp_desc.wrap_w = sg.SG_WRAP_CLAMP_TO_EDGE;
+        smp_desc.label = "glyph_atlas_smp";
+        const atlas_smp = sg.sg_make_sampler(&smp_desc);
+
         var shd_desc = std.mem.zeroes(sg.sg_shader_desc);
         shd_desc.vertex_func.source = vs_source;
         shd_desc.fragment_func.source = fs_source;
         shd_desc.attrs[0] = .{ .base_type = sg.SG_SHADERATTRBASETYPE_FLOAT, .glsl_name = "a_pos" };
         shd_desc.attrs[1] = .{ .base_type = sg.SG_SHADERATTRBASETYPE_FLOAT, .glsl_name = "a_pos_size" };
-        shd_desc.attrs[2] = .{ .base_type = sg.SG_SHADERATTRBASETYPE_FLOAT, .glsl_name = "a_color" };
-        shd_desc.attrs[3] = .{ .base_type = sg.SG_SHADERATTRBASETYPE_FLOAT, .glsl_name = "a_border_color" };
-        shd_desc.attrs[4] = .{ .base_type = sg.SG_SHADERATTRBASETYPE_FLOAT, .glsl_name = "a_params" };
+        shd_desc.attrs[2] = .{ .base_type = sg.SG_SHADERATTRBASETYPE_FLOAT, .glsl_name = "a_uv_rect" };
+        shd_desc.attrs[3] = .{ .base_type = sg.SG_SHADERATTRBASETYPE_FLOAT, .glsl_name = "a_color" };
+        shd_desc.attrs[4] = .{ .base_type = sg.SG_SHADERATTRBASETYPE_FLOAT, .glsl_name = "a_border_color" };
+        shd_desc.attrs[5] = .{ .base_type = sg.SG_SHADERATTRBASETYPE_FLOAT, .glsl_name = "a_params" };
         shd_desc.uniform_blocks[0].stage = sg.SG_SHADERSTAGE_VERTEX;
         shd_desc.uniform_blocks[0].size = @sizeOf(VsParams);
         shd_desc.uniform_blocks[0].layout = sg.SG_UNIFORMLAYOUT_NATIVE;
@@ -197,6 +272,21 @@ pub const Renderer = struct {
             .type = sg.SG_UNIFORMTYPE_FLOAT2,
             .array_count = 1,
             .glsl_name = "u_viewport",
+        };
+        shd_desc.views[0].texture = .{
+            .stage = sg.SG_SHADERSTAGE_FRAGMENT,
+            .image_type = sg.SG_IMAGETYPE_2D,
+            .sample_type = sg.SG_IMAGESAMPLETYPE_FLOAT,
+        };
+        shd_desc.samplers[0] = .{
+            .stage = sg.SG_SHADERSTAGE_FRAGMENT,
+            .sampler_type = sg.SG_SAMPLERTYPE_FILTERING,
+        };
+        shd_desc.texture_sampler_pairs[0] = .{
+            .stage = sg.SG_SHADERSTAGE_FRAGMENT,
+            .view_slot = 0,
+            .sampler_slot = 0,
+            .glsl_name = "u_atlas",
         };
         shd_desc.label = "uberquad_shader";
         const shd = sg.sg_make_shader(&shd_desc);
@@ -225,15 +315,20 @@ pub const Renderer = struct {
         };
         pip_desc.layout.attrs[2] = .{
             .buffer_index = 1,
-            .offset = @offsetOf(core.QuadInstance, "color"),
+            .offset = @offsetOf(core.QuadInstance, "uv_rect"),
             .format = sg.SG_VERTEXFORMAT_FLOAT4,
         };
         pip_desc.layout.attrs[3] = .{
             .buffer_index = 1,
-            .offset = @offsetOf(core.QuadInstance, "border_color"),
+            .offset = @offsetOf(core.QuadInstance, "color"),
             .format = sg.SG_VERTEXFORMAT_FLOAT4,
         };
         pip_desc.layout.attrs[4] = .{
+            .buffer_index = 1,
+            .offset = @offsetOf(core.QuadInstance, "border_color"),
+            .format = sg.SG_VERTEXFORMAT_FLOAT4,
+        };
+        pip_desc.layout.attrs[5] = .{
             .buffer_index = 1,
             .offset = @offsetOf(core.QuadInstance, "params"),
             .format = sg.SG_VERTEXFORMAT_FLOAT4,
@@ -256,21 +351,33 @@ pub const Renderer = struct {
 
         const vbuf_ok = sg.sg_query_buffer_state(vbuf) == sg.SG_RESOURCESTATE_VALID;
         const ibuf_ok = sg.sg_query_buffer_state(ibuf) == sg.SG_RESOURCESTATE_VALID;
+        const stg_ok = sg.sg_query_buffer_state(atlas_staging) == sg.SG_RESOURCESTATE_VALID;
+        const img_ok = sg.sg_query_image_state(atlas_img) == sg.SG_RESOURCESTATE_VALID;
+        const view_ok = sg.sg_query_view_state(atlas_view) == sg.SG_RESOURCESTATE_VALID;
+        const smp_ok = sg.sg_query_sampler_state(atlas_smp) == sg.SG_RESOURCESTATE_VALID;
         const shd_ok = sg.sg_query_shader_state(shd) == sg.SG_RESOURCESTATE_VALID;
         const pip_ok = sg.sg_query_pipeline_state(pip) == sg.SG_RESOURCESTATE_VALID;
 
-        if (!vbuf_ok or !ibuf_ok or !shd_ok or !pip_ok) {
+        if (!vbuf_ok or !ibuf_ok or !stg_ok or !img_ok or !view_ok or !smp_ok or !shd_ok or !pip_ok) {
             _ = __android_log_print(
                 ANDROID_LOG_ERROR,
                 "ZigGuiSpike",
-                "Renderer resource validation failed (vbuf=%d ibuf=%d shd=%d pip=%d)",
+                "Renderer resource validation failed (vbuf=%d ibuf=%d stg=%d img=%d view=%d smp=%d shd=%d pip=%d)",
                 @as(c_int, @intFromBool(vbuf_ok)),
                 @as(c_int, @intFromBool(ibuf_ok)),
+                @as(c_int, @intFromBool(stg_ok)),
+                @as(c_int, @intFromBool(img_ok)),
+                @as(c_int, @intFromBool(view_ok)),
+                @as(c_int, @intFromBool(smp_ok)),
                 @as(c_int, @intFromBool(shd_ok)),
                 @as(c_int, @intFromBool(pip_ok)),
             );
             sg.sg_destroy_pipeline(pip);
             sg.sg_destroy_shader(shd);
+            sg.sg_destroy_view(atlas_view);
+            sg.sg_destroy_sampler(atlas_smp);
+            sg.sg_destroy_image(atlas_img);
+            sg.sg_destroy_buffer(atlas_staging);
             sg.sg_destroy_buffer(ibuf);
             sg.sg_destroy_buffer(vbuf);
             sg.sg_shutdown();
@@ -281,8 +388,14 @@ pub const Renderer = struct {
             .initialized = true,
             .vbuf = vbuf,
             .ibuf = ibuf,
+            .atlas_staging = atlas_staging,
+            .atlas_img = atlas_img,
+            .atlas_view = atlas_view,
+            .atlas_smp = atlas_smp,
             .shd = shd,
             .pip = pip,
+            .atlas_w = eff_w,
+            .atlas_h = eff_h,
         };
     }
 
@@ -290,10 +403,54 @@ pub const Renderer = struct {
         if (!self.initialized) return;
         sg.sg_destroy_pipeline(self.pip);
         sg.sg_destroy_shader(self.shd);
+        sg.sg_destroy_view(self.atlas_view);
+        sg.sg_destroy_sampler(self.atlas_smp);
+        sg.sg_destroy_image(self.atlas_img);
+        sg.sg_destroy_buffer(self.atlas_staging);
         sg.sg_destroy_buffer(self.ibuf);
         sg.sg_destroy_buffer(self.vbuf);
         sg.sg_shutdown();
         self.* = .{};
+    }
+
+    pub fn uploadAtlas(self: *Renderer, pixels: []const u8, w: u32, h: u32) void {
+        if (!self.initialized or w == 0 or h == 0) return;
+        if (w != self.atlas_w or h != self.atlas_h) return;
+        const max_c_int: usize = @intCast(std.math.maxInt(c_int));
+        if (w > max_c_int or h > max_c_int) return;
+        const expected_len = std.math.mul(usize, @as(usize, w), @as(usize, h)) catch return;
+        if (expected_len > max_c_int or pixels.len < expected_len) return;
+
+        var wb = std.mem.zeroes(sg.sg_write_buffer_desc);
+        wb.src.data = .{
+            .ptr = pixels.ptr,
+            .size = expected_len,
+        };
+        wb.dst.buffer = self.atlas_staging;
+        wb.dst.offset = 0;
+        wb.size = expected_len;
+        sg.sg_write_buffer_transient(&wb);
+
+        var cpy = std.mem.zeroes(sg.sg_copy_buffer_to_image_desc);
+        cpy.src = .{
+            .buffer = self.atlas_staging,
+            .offset = 0,
+            .bytes_per_row = @intCast(w),
+            .bytes_per_slice = @intCast(expected_len),
+        };
+        cpy.dst = .{
+            .image = self.atlas_img,
+            .mip_level = 0,
+            .x = 0,
+            .y = 0,
+            .slice = 0,
+        };
+        cpy.size = .{
+            .width = @intCast(w),
+            .height = @intCast(h),
+            .num_slices = 1,
+        };
+        sg.sg_copy_buffer_to_image(&cpy);
     }
 
     pub fn render(self: *Renderer, width: i32, height: i32, quads: []const core.QuadInstance) void {
@@ -337,6 +494,8 @@ pub const Renderer = struct {
             var bind = std.mem.zeroes(sg.sg_bindings);
             bind.vertex_buffers[0] = self.vbuf;
             bind.vertex_buffers[1] = self.ibuf;
+            bind.views[0] = self.atlas_view;
+            bind.samplers[0] = self.atlas_smp;
             sg.sg_apply_bindings(&bind);
 
             var vs_params = VsParams{

@@ -16,9 +16,10 @@ pub const Color = [4]f32;
 
 pub const QuadInstance = extern struct {
     pos_size: [4]f32,
+    uv_rect: [4]f32 = .{ 0.0, 0.0, 0.0, 0.0 },
     color: [4]f32,
     border_color: [4]f32,
-    params: [4]f32, // [corner_radius, border_width, shadow_blur, _pad]
+    params: [4]f32, // [corner_radius, border_width, shadow_blur, mode (0=SDF, 1=glyph)]
 };
 
 fn hexColor(comptime rgb: u24) Color {
@@ -64,6 +65,11 @@ fn sanitizeNonNeg(v: f32) f32 {
 fn sanitizeUnit(v: f32) f32 {
     if (!std.math.isFinite(v)) return 0.0;
     return std.math.clamp(v, 0.0, 1.0);
+}
+
+fn sanitizeFontSize(v: f32) f32 {
+    if (!std.math.isFinite(v) or v <= 0.0) return 16.0;
+    return v;
 }
 
 fn linearToSrgb(c: f32) f32 {
@@ -139,6 +145,10 @@ pub const NodeDesc = struct {
     kind: NodeKind = .vstack,
     role: SemanticRole = .container,
     test_id: []const u8 = "",
+    label: []const u8 = "",
+    sublabel: []const u8 = "",
+    font_size: f32 = 16.0,
+    text_color: Color = Nord.snow_storm_1,
     width: f32 = 0,
     height: f32 = 0,
     flex: f32 = 1.0,
@@ -159,6 +169,10 @@ pub const Node = struct {
     kind: NodeKind = .vstack,
     role: SemanticRole = .container,
     test_id: []const u8 = "",
+    label: []const u8 = "",
+    sublabel: []const u8 = "",
+    font_size: f32 = 16.0,
+    text_color: Color = Nord.snow_storm_1,
     parent: ?u16 = null,
     first_child: ?u16 = null,
     next_sibling: ?u16 = null,
@@ -238,6 +252,10 @@ pub const LayoutArena = struct {
             .kind = desc.kind,
             .role = desc.role,
             .test_id = desc.test_id,
+            .label = desc.label,
+            .sublabel = desc.sublabel,
+            .font_size = sanitizeFontSize(desc.font_size),
+            .text_color = desc.text_color,
             .width = sanitizeNonNeg(desc.width),
             .height = sanitizeNonNeg(desc.height),
             .flex = sanitizeNonNeg(desc.flex),
@@ -429,11 +447,47 @@ pub const LayoutArena = struct {
     }
 
     pub fn emitQuads(self: *const LayoutArena, out_buf: []QuadInstance, scale_factor: f32) usize {
+        return self.emitQuadsWithAtlas(out_buf, scale_factor, null, 0);
+    }
+
+    pub fn emitQuadsWithAtlas(
+        self: *const LayoutArena,
+        out_buf: []QuadInstance,
+        scale_factor: f32,
+        atlas_opt: anytype,
+        frame_idx: u64,
+    ) usize {
         if (!std.math.isFinite(scale_factor) or scale_factor <= 0.0) return 0;
         var count: usize = 0;
         const root = self.root_index orelse return 0;
-        self.emitNodeQuads(root, out_buf, &count, scale_factor);
+        const maybe_atlas = asOptionalAtlas(atlas_opt);
+        if (@TypeOf(maybe_atlas) != ?noreturn) {
+            if (maybe_atlas) |atlas| {
+                const epoch_before = atlas.repack_epoch;
+                self.emitNodeQuads(root, out_buf, &count, scale_factor, atlas_opt, frame_idx);
+                if (atlas.repack_epoch != epoch_before) {
+                    count = 0;
+                    self.emitNodeQuads(root, out_buf, &count, scale_factor, atlas_opt, frame_idx);
+                }
+                return count;
+            }
+        }
+        self.emitNodeQuads(root, out_buf, &count, scale_factor, atlas_opt, frame_idx);
         return count;
+    }
+
+    fn asOptionalAtlas(atlas_opt: anytype) switch (@typeInfo(@TypeOf(atlas_opt))) {
+        .null => ?noreturn,
+        .optional => @TypeOf(atlas_opt),
+        .pointer => ?@TypeOf(atlas_opt),
+        else => @compileError("atlas_opt must be null, optional pointer, or pointer to GlyphAtlas"),
+    } {
+        return switch (@typeInfo(@TypeOf(atlas_opt))) {
+            .null => null,
+            .optional => atlas_opt,
+            .pointer => atlas_opt,
+            else => unreachable,
+        };
     }
 
     fn emitNodeQuads(
@@ -442,12 +496,19 @@ pub const LayoutArena = struct {
         out_buf: []QuadInstance,
         count: *usize,
         scale: f32,
+        atlas_opt: anytype,
+        frame_idx: u64,
     ) void {
         if (count.* >= out_buf.len) return;
+        const maybe_atlas = asOptionalAtlas(atlas_opt);
 
         const slice = self.nodes.slice();
         const kind = slice.items(.kind)[idx];
         const role = slice.items(.role)[idx];
+        const label = slice.items(.label)[idx];
+        const sublabel = slice.items(.sublabel)[idx];
+        const font_size = sanitizeFontSize(slice.items(.font_size)[idx]);
+        const text_color = slice.items(.text_color)[idx];
         const rect = slice.items(.rect)[idx];
         const fill = slice.items(.fill)[idx];
         const border = slice.items(.border)[idx];
@@ -469,6 +530,31 @@ pub const LayoutArena = struct {
                             .border_color = border,
                             .params = .{ radius * scale, bw * scale, blur * scale, 0.0 },
                         });
+                    }
+                    if (@TypeOf(maybe_atlas) != ?noreturn) {
+                        if (maybe_atlas) |atlas| {
+                            if (label.len > 0 and rect.w >= 24.0 and rect.h >= 12.0 and count.* < out_buf.len) {
+                                const m = atlas.measureText(label, font_size, scale);
+                                if (sublabel.len > 0) {
+                                    const sub_fs = font_size * 0.82;
+                                    const m_sub = atlas.measureText(sublabel, sub_fs, scale);
+                                    const total_h = m.height + 2.0 + m_sub.height;
+                                    const ly = rect.y + (rect.h - total_h) * 0.5;
+                                    const lx = rect.x + @min(12.0, rect.w * 0.1);
+                                    count.* += atlas.emitTextQuads(label, lx, ly, font_size, scale, text_color, out_buf[count.*..], frame_idx);
+                                    if (count.* < out_buf.len) {
+                                        count.* += atlas.emitTextQuads(sublabel, lx, ly + m.height + 2.0, sub_fs, scale, Nord.snow_storm_0, out_buf[count.*..], frame_idx);
+                                    }
+                                } else {
+                                    const ly = rect.y + (rect.h - m.height) * 0.5;
+                                    const lx = if (rect.w < 260.0 and m.width < rect.w)
+                                        rect.x + (rect.w - m.width) * 0.5
+                                    else
+                                        rect.x + @min(8.0, rect.w * 0.1);
+                                    count.* += atlas.emitTextQuads(label, lx, ly, font_size, scale, text_color, out_buf[count.*..], frame_idx);
+                                }
+                            }
+                        }
                     }
                 },
                 .toggle => {
@@ -564,6 +650,17 @@ pub const LayoutArena = struct {
                                 });
                             }
                         }
+
+                        if (@TypeOf(maybe_atlas) != ?noreturn) {
+                            if (maybe_atlas) |atlas| {
+                                if (label.len > 0 and rect.w >= 120.0 and rect.h >= 16.0 and count.* < out_buf.len) {
+                                    const m = atlas.measureText(label, font_size, scale);
+                                    const lx = rect.x + 28.0;
+                                    const ly = rect.y + (rect.h - m.height) * 0.5;
+                                    count.* += atlas.emitTextQuads(label, lx, ly, font_size, scale, text_color, out_buf[count.*..], frame_idx);
+                                }
+                            }
+                        }
                     }
                 },
                 .slider => {
@@ -575,9 +672,12 @@ pub const LayoutArena = struct {
                         .params = .{ radius * scale, bw * scale, blur * scale, 0.0 },
                     });
 
+                    const has_label = (label.len > 0 and rect.w >= 100.0 and rect.h >= 40.0);
+                    const track_center_y = if (has_label) rect.y + rect.h * 0.68 else rect.y + rect.h * 0.5;
+
                     const tb = sliderTrackBounds(rect);
                     const track_h = @min(8.0, rect.h * 0.5);
-                    const track_y = rect.y + (rect.h - track_h) * 0.5;
+                    const track_y = track_center_y - track_h * 0.5;
                     if (tb.w > 0.0 and track_h > 0.0) {
                         const phys_track = snapRectToPhysical(.{ .x = tb.x, .y = track_y, .w = tb.w, .h = track_h }, scale);
                         pushQuad(out_buf, count, .{
@@ -610,9 +710,14 @@ pub const LayoutArena = struct {
                             rect.x + knob_d * 0.5,
                             rect.x + rect.w - knob_d * 0.5,
                         );
+                        const knob_y = std.math.clamp(
+                            track_center_y - knob_d * 0.5,
+                            rect.y,
+                            rect.y + rect.h - knob_d,
+                        );
                         const knob_rect = Rect{
                             .x = knob_cx - knob_d * 0.5,
-                            .y = rect.y + (rect.h - knob_d) * 0.5,
+                            .y = knob_y,
                             .w = knob_d,
                             .h = knob_d,
                         };
@@ -623,6 +728,16 @@ pub const LayoutArena = struct {
                             .border_color = accent,
                             .params = .{ (knob_d * 0.5) * scale, 2.0 * scale, 4.0 * scale, 0.0 },
                         });
+                    }
+
+                    if (@TypeOf(maybe_atlas) != ?noreturn) {
+                        if (maybe_atlas) |atlas| {
+                            if (has_label and count.* < out_buf.len) {
+                                const lx = tb.x;
+                                const ly = rect.y + 8.0;
+                                count.* += atlas.emitTextQuads(label, lx, ly, font_size, scale, text_color, out_buf[count.*..], frame_idx);
+                            }
+                        }
                     }
                 },
                 .bar => {
@@ -656,6 +771,17 @@ pub const LayoutArena = struct {
                             });
                         }
                     }
+
+                    if (@TypeOf(maybe_atlas) != ?noreturn) {
+                        if (maybe_atlas) |atlas| {
+                            if (label.len > 0 and rect.w >= 32.0 and rect.h >= 12.0 and count.* < out_buf.len) {
+                                const m = atlas.measureText(label, font_size, scale);
+                                const lx = rect.x + @max(4.0, (rect.w - m.width) * 0.5);
+                                const ly = rect.y + (rect.h - m.height) * 0.5;
+                                count.* += atlas.emitTextQuads(label, lx, ly, font_size, scale, text_color, out_buf[count.*..], frame_idx);
+                            }
+                        }
+                    }
                 },
             }
         }
@@ -663,7 +789,7 @@ pub const LayoutArena = struct {
         const next_siblings = slice.items(.next_sibling);
         var cur: ?u16 = slice.items(.first_child)[idx];
         while (cur) |c| : (cur = next_siblings[c]) {
-            self.emitNodeQuads(c, out_buf, count, scale);
+            self.emitNodeQuads(c, out_buf, count, scale, atlas_opt, frame_idx);
             if (count.* >= out_buf.len) break;
         }
     }
@@ -802,8 +928,8 @@ pub fn buildDemoScene(arena: *LayoutArena) !void {
         .kind = .card,
         .role = .panel,
         .test_id = "dashboard.header",
-        .height = 84.0,
-        .padding = 16.0,
+        .height = 88.0,
+        .padding = 12.0,
         .gap = 12.0,
         .corner_radius = 16.0,
         .border_width = 1.5,
@@ -833,14 +959,24 @@ pub fn buildDemoScene(arena: *LayoutArena) !void {
         .kind = .vstack,
         .role = .container,
         .test_id = "header.metrics",
-        .gap = 8.0,
+        .gap = 6.0,
+    });
+    _ = try arena.addChild(header_bars, .{
+        .kind = .card,
+        .role = .panel,
+        .test_id = "header.title",
+        .label = "ZIG GUI // UBERQUAD",
+        .font_size = 18.0,
+        .text_color = Nord.snow_storm_2,
+        .height = 24.0,
+        .fill = Nord.transparent,
     });
     _ = try arena.addChild(header_bars, .{
         .kind = .bar,
         .role = .progress_bar,
         .test_id = "header.gpu_budget",
-        .height = 22.0,
-        .corner_radius = 8.0,
+        .height = 14.0,
+        .corner_radius = 7.0,
         .fill = Nord.polar_night_0,
         .accent = Nord.aurora_green,
         .slider_val = 0.88,
@@ -849,8 +985,8 @@ pub fn buildDemoScene(arena: *LayoutArena) !void {
         .kind = .bar,
         .role = .progress_bar,
         .test_id = "header.frame_headroom",
-        .height = 22.0,
-        .corner_radius = 8.0,
+        .height = 14.0,
+        .corner_radius = 7.0,
         .fill = Nord.polar_night_0,
         .accent = Nord.frost_2,
         .slider_val = 0.64,
@@ -861,6 +997,9 @@ pub fn buildDemoScene(arena: *LayoutArena) !void {
         .kind = .toggle,
         .role = .switch_control,
         .test_id = "settings.gpu_cache",
+        .label = "GPU Glyph Atlas",
+        .font_size = 16.0,
+        .text_color = Nord.snow_storm_2,
         .height = 60.0,
         .corner_radius = 14.0,
         .border_width = 1.5,
@@ -874,6 +1013,9 @@ pub fn buildDemoScene(arena: *LayoutArena) !void {
         .kind = .toggle,
         .role = .switch_control,
         .test_id = "settings.zero_tick_sleep",
+        .label = "Zero-Tick Sleep",
+        .font_size = 16.0,
+        .text_color = Nord.snow_storm_2,
         .height = 60.0,
         .corner_radius = 14.0,
         .border_width = 1.5,
@@ -887,6 +1029,9 @@ pub fn buildDemoScene(arena: *LayoutArena) !void {
         .kind = .toggle,
         .role = .switch_control,
         .test_id = "settings.oklab_palette",
+        .label = "Oklab Palette",
+        .font_size = 16.0,
+        .text_color = Nord.snow_storm_2,
         .height = 60.0,
         .corner_radius = 14.0,
         .border_width = 1.5,
@@ -902,6 +1047,9 @@ pub fn buildDemoScene(arena: *LayoutArena) !void {
         .kind = .slider,
         .role = .slider,
         .test_id = "settings.sdf_aa_width",
+        .label = "SDF AA Width",
+        .font_size = 14.0,
+        .text_color = Nord.snow_storm_1,
         .height = 64.0,
         .corner_radius = 14.0,
         .border_width = 1.5,
@@ -915,6 +1063,9 @@ pub fn buildDemoScene(arena: *LayoutArena) !void {
         .kind = .slider,
         .role = .slider,
         .test_id = "settings.shadow_softness",
+        .label = "Shadow Softness",
+        .font_size = 14.0,
+        .text_color = Nord.snow_storm_1,
         .height = 64.0,
         .corner_radius = 14.0,
         .border_width = 1.5,
@@ -930,20 +1081,49 @@ pub fn buildDemoScene(arena: *LayoutArena) !void {
         .kind = .hstack,
         .role = .container,
         .test_id = "dashboard.status_row",
-        .height = 76.0,
+        .height = 84.0,
         .gap = 12.0,
     });
-    const status_specs = [_]struct { id: []const u8, accent: Color, val: f32 }{
-        .{ .id = "status.cpu_idle", .accent = Nord.aurora_green, .val = 0.96 },
-        .{ .id = "status.batch_eff", .accent = Nord.frost_1, .val = 0.85 },
-        .{ .id = "status.zero_alloc", .accent = Nord.aurora_orange, .val = 0.74 },
+    const status_specs = [_]struct {
+        card_id: []const u8,
+        label_id: []const u8,
+        bar_id: []const u8,
+        label: []const u8,
+        accent: Color,
+        val: f32,
+    }{
+        .{
+            .card_id = "status.cpu_idle.card",
+            .label_id = "status.cpu_idle.label",
+            .bar_id = "status.cpu_idle.bar",
+            .label = "CPU 0% IDLE",
+            .accent = Nord.aurora_green,
+            .val = 0.96,
+        },
+        .{
+            .card_id = "status.batch_eff.card",
+            .label_id = "status.batch_eff.label",
+            .bar_id = "status.batch_eff.bar",
+            .label = "1-PASS SDF",
+            .accent = Nord.frost_1,
+            .val = 0.85,
+        },
+        .{
+            .card_id = "status.zero_alloc.card",
+            .label_id = "status.zero_alloc.label",
+            .bar_id = "status.zero_alloc.bar",
+            .label = "0 ALLOC",
+            .accent = Nord.aurora_orange,
+            .val = 0.74,
+        },
     };
     for (status_specs) |spec| {
         const card = try arena.addChild(status_row, .{
             .kind = .card,
             .role = .panel,
-            .test_id = spec.id,
-            .padding = 14.0,
+            .test_id = spec.card_id,
+            .padding = 12.0,
+            .gap = 8.0,
             .corner_radius = 14.0,
             .border_width = 1.5,
             .shadow_blur = 6.0,
@@ -951,10 +1131,20 @@ pub fn buildDemoScene(arena: *LayoutArena) !void {
             .border = Nord.polar_night_3,
         });
         _ = try arena.addChild(card, .{
+            .kind = .card,
+            .role = .panel,
+            .test_id = spec.label_id,
+            .label = spec.label,
+            .font_size = 13.0,
+            .text_color = Nord.snow_storm_1,
+            .height = 20.0,
+            .fill = Nord.transparent,
+        });
+        _ = try arena.addChild(card, .{
             .kind = .bar,
             .role = .progress_bar,
-            .test_id = spec.id,
-            .corner_radius = 10.0,
+            .test_id = spec.bar_id,
+            .corner_radius = 8.0,
             .border_width = 1.0,
             .fill = Nord.polar_night_0,
             .border = Nord.polar_night_2,

@@ -1,5 +1,6 @@
 const std = @import("std");
 const core = @import("core.zig");
+const glyph_atlas = @import("glyph_atlas.zig");
 const renderer = @import("renderer.zig");
 
 const c = @cImport({
@@ -7,6 +8,7 @@ const c = @cImport({
     @cInclude("pthread.h");
     @cInclude("unistd.h");
     @cInclude("fcntl.h");
+    @cInclude("sys/stat.h");
     @cInclude("time.h");
     @cInclude("EGL/egl.h");
     @cInclude("android/native_activity.h");
@@ -85,6 +87,61 @@ fn getDensityScale(asset_manager: ?*c.AAssetManager, config: *c.AConfiguration) 
         return @as(f32, @floatFromInt(density)) / 160.0;
     }
     return 2.0;
+}
+
+fn readFileAllocPosix(allocator: std.mem.Allocator, path: [*:0]const u8, max_bytes: usize) ?[]u8 {
+    var fd: c_int = -1;
+    while (true) {
+        fd = c.open(path, c.O_RDONLY);
+        if (fd >= 0) break;
+        if (std.c._errno().* == @intFromEnum(std.posix.E.INTR)) continue;
+        return null;
+    }
+    defer _ = c.close(fd);
+
+    var st: c.struct_stat = undefined;
+    if (c.fstat(fd, &st) != 0 or st.st_size <= 0 or st.st_size > max_bytes) {
+        return null;
+    }
+    const size: usize = @intCast(st.st_size);
+    const buf = allocator.alloc(u8, size) catch return null;
+
+    var total: usize = 0;
+    while (total < size) {
+        const rc = c.read(fd, buf[total..].ptr, size - total);
+        if (rc > 0) {
+            total += @intCast(rc);
+        } else if (rc == 0) {
+            allocator.free(buf);
+            return null;
+        } else {
+            if (std.c._errno().* == @intFromEnum(std.posix.E.INTR)) continue;
+            allocator.free(buf);
+            return null;
+        }
+    }
+    return buf;
+}
+
+fn initAndroidGlyphAtlas(allocator: std.mem.Allocator, atlas_size: u32, scale_factor: f32) ?glyph_atlas.GlyphAtlas {
+    const candidates = [_][*:0]const u8{
+        "/system/fonts/Roboto-Regular.ttf",
+        "/system/fonts/DroidSans.ttf",
+    };
+    for (candidates) |path| {
+        const fb = readFileAllocPosix(allocator, path, 16 * 1024 * 1024) orelse continue;
+        defer allocator.free(fb);
+
+        if (glyph_atlas.GlyphAtlas.init(allocator, fb, atlas_size, atlas_size)) |a_val| {
+            var a = a_val;
+            a.setScaleFactor(scale_factor);
+            logInfo("Loaded font %s (%zu bytes), GlyphAtlas %ux%u ready", .{ path, fb.len, atlas_size, atlas_size });
+            return a;
+        } else |err| {
+            logErr("GlyphAtlas.init failed for %s: %s", .{ path, @errorName(err).ptr });
+        }
+    }
+    return null;
 }
 
 fn dumpSemanticTreeToLogcat(arena: *const core.LayoutArena) void {
@@ -248,6 +305,17 @@ fn workerMain(arg: ?*anyopaque) callconv(.c) ?*anyopaque {
     var scale_factor = getDensityScale(state.activity.assetManager, config);
     logInfo("Worker started, initial scale_factor=%.2f", .{@as(f64, scale_factor)});
 
+    const ATLAS_SIZE: u32 = renderer.DEFAULT_ATLAS_SIZE;
+    var atlas_storage: glyph_atlas.GlyphAtlas = undefined;
+    var atlas_ptr: ?*glyph_atlas.GlyphAtlas = null;
+    if (initAndroidGlyphAtlas(std.heap.c_allocator, ATLAS_SIZE, scale_factor)) |a| {
+        atlas_storage = a;
+        atlas_ptr = &atlas_storage;
+    } else {
+        logErr("Failed to load Android system font; running without text", .{});
+    }
+    defer if (atlas_ptr) |a| a.deinit();
+
     var arena = core.LayoutArena.init(std.heap.c_allocator);
     defer arena.deinit();
     core.buildDemoScene(&arena) catch {
@@ -261,13 +329,24 @@ fn workerMain(arg: ?*anyopaque) callconv(.c) ?*anyopaque {
     };
     arena.consumeRedraw();
 
+    const quad_buf = std.heap.c_allocator.alloc(core.QuadInstance, renderer.MAX_QUADS) catch {
+        logErr("OOM allocating quad_buf", .{});
+        _ = c.pthread_mutex_lock(&state.mutex);
+        state.startup_failed = true;
+        state.worker_exited = true;
+        _ = c.pthread_cond_broadcast(&state.cond);
+        _ = c.pthread_mutex_unlock(&state.mutex);
+        return null;
+    };
+    defer std.heap.c_allocator.free(quad_buf);
+
     var egl: EglState = .{};
     var rend: renderer.Renderer = .{};
     var window: ?*c.ANativeWindow = null;
     var input_queue: ?*c.AInputQueue = null;
     var active_pointer_id: ?i32 = null;
-    var quad_buf: [renderer.MAX_QUADS]core.QuadInstance = undefined;
     var dumped_initial_tree = false;
+    var frame_idx: u64 = 0;
 
     _ = c.pthread_mutex_lock(&state.mutex);
     state.running = true;
@@ -320,8 +399,11 @@ fn workerMain(arg: ?*anyopaque) callconv(.c) ?*anyopaque {
                                 egl.deinit();
                                 if (EglState.init(w)) |new_egl| {
                                     egl = new_egl;
-                                    if (renderer.Renderer.init()) |new_rend| {
+                                    if (renderer.Renderer.init(ATLAS_SIZE, ATLAS_SIZE)) |new_rend| {
                                         rend = new_rend;
+                                        if (atlas_ptr) |a| {
+                                            a.dirty = true;
+                                        }
                                         const lw = @as(f32, @floatFromInt(egl.width)) / scale_factor;
                                         const lh = @as(f32, @floatFromInt(egl.height)) / scale_factor;
                                         arena.layout(lw, lh);
@@ -390,6 +472,9 @@ fn workerMain(arg: ?*anyopaque) callconv(.c) ?*anyopaque {
                         },
                         .config_changed => {
                             scale_factor = getDensityScale(state.activity.assetManager, config);
+                            if (atlas_ptr) |a| {
+                                a.setScaleFactor(scale_factor);
+                            }
                             if (egl.width > 0 and egl.height > 0) {
                                 const lw = @as(f32, @floatFromInt(egl.width)) / scale_factor;
                                 const lh = @as(f32, @floatFromInt(egl.height)) / scale_factor;
@@ -500,7 +585,14 @@ fn workerMain(arg: ?*anyopaque) callconv(.c) ?*anyopaque {
             var t1: c.struct_timespec = undefined;
             _ = c.clock_gettime(c.CLOCK_MONOTONIC, &t0);
 
-            const quad_count = arena.emitQuads(&quad_buf, scale_factor);
+            frame_idx +%= 1;
+            const quad_count = arena.emitQuadsWithAtlas(quad_buf, scale_factor, atlas_ptr, frame_idx);
+            if (atlas_ptr) |a| {
+                if (a.dirty) {
+                    rend.uploadAtlas(a.pixels, a.width, a.height);
+                    a.markUploaded();
+                }
+            }
             rend.render(egl.width, egl.height, quad_buf[0..quad_count]);
             const swap_ok = c.eglSwapBuffers(egl.display, egl.surface) != c.EGL_FALSE;
 
@@ -512,8 +604,11 @@ fn workerMain(arg: ?*anyopaque) callconv(.c) ?*anyopaque {
                 if (window) |w| {
                     if (EglState.init(w)) |new_egl| {
                         egl = new_egl;
-                        if (renderer.Renderer.init()) |new_rend| {
+                        if (renderer.Renderer.init(ATLAS_SIZE, ATLAS_SIZE)) |new_rend| {
                             rend = new_rend;
+                            if (atlas_ptr) |a| {
+                                a.dirty = true;
+                            }
                             const lw = @as(f32, @floatFromInt(egl.width)) / scale_factor;
                             const lh = @as(f32, @floatFromInt(egl.height)) / scale_factor;
                             arena.layout(lw, lh);

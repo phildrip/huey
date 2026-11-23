@@ -1,8 +1,8 @@
 const std = @import("std");
 const core = @import("core.zig");
 
-test "QuadInstance is 64-byte ABI aligned for UberQuad shader" {
-    try std.testing.expectEqual(@as(usize, 64), @sizeOf(core.QuadInstance));
+test "QuadInstance is 80-byte ABI aligned for UberQuad shader" {
+    try std.testing.expectEqual(@as(usize, 80), @sizeOf(core.QuadInstance));
 }
 
 test "physical pixel snapping preserves crisp edges at fractional and 2x DPI" {
@@ -137,6 +137,15 @@ test "buildDemoScene emits >= 40 UberQuads cleanly and supports slider drag" {
     const val_after = arena.getSliderValue(hit.?).?;
     try std.testing.expect(val_after > val_before);
     arena.handlePointerUp();
+
+    // Semantic tree uses distinct test_ids for status cards, labels, and bars
+    var aw: std.Io.Writer.Allocating = .init(std.testing.allocator);
+    defer aw.deinit();
+    try arena.dumpSemanticTree(&aw.writer);
+    const dumped = aw.written();
+    try std.testing.expect(std.mem.indexOf(u8, dumped, "status.cpu_idle.card") != null);
+    try std.testing.expect(std.mem.indexOf(u8, dumped, "status.cpu_idle.label") != null);
+    try std.testing.expect(std.mem.indexOf(u8, dumped, "status.cpu_idle.bar") != null);
 }
 
 test "stale NodeId is rejected after arena reset" {

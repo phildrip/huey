@@ -10,8 +10,9 @@ NDK="${NDK:-$ANDROID_SDK/ndk/21.1.6352462}"
 BUILD_TOOLS="${BUILD_TOOLS:-$ANDROID_SDK/build-tools/35.0.0}"
 PLATFORM_JAR="${PLATFORM_JAR:-$ANDROID_SDK/platforms/android-25/android.jar}"
 
-echo "[0/5] Running unit tests (src/core_test.zig)..."
+echo "[0/5] Running unit tests (src/core_test.zig & src/glyph_atlas_test.zig)..."
 "$ZIG" test "$ROOT_DIR/src/core_test.zig"
+"$ZIG" test "$ROOT_DIR/src/glyph_atlas_test.zig" -I"$ROOT_DIR/vendor" "$ROOT_DIR/src/stb_truetype_impl.c" -lc -lm
 
 SYSROOT_INC="$NDK/toolchains/llvm/prebuilt/linux-x86_64/sysroot/usr/include"
 TARGET_INC="$SYSROOT_INC/aarch64-linux-android"
@@ -51,7 +52,8 @@ echo "[1/5] Compiling libziggui.so (aarch64-linux-android, ReleaseSmall)..."
   -fsoname=libziggui.so \
   -femit-bin="$LIB_OUT" \
   "$ROOT_DIR/src/android_main.zig" \
-  "$ROOT_DIR/src/sokol_impl.c"
+  "$ROOT_DIR/src/sokol_impl.c" \
+  "$ROOT_DIR/src/stb_truetype_impl.c"
 
 echo "[2/5] Linking base APK with aapt2..."
 rm -f "$UNALIGNED_APK" "$ALIGNED_APK" "$FINAL_APK"
