@@ -2,3 +2,4 @@ build/
 .zig-cache/
 zig-out/
 *.keystore
+.beads.gate.lock
