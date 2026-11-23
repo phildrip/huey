@@ -18,6 +18,7 @@
         android:allowBackup="false"
         android:extractNativeLibs="false"
         android:hasCode="false"
+        android:icon="@mipmap/ic_launcher"
         android:label="Huey Showcase">
         <activity
             android:name="android.app.NativeActivity"

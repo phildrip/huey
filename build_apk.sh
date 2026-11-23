@@ -88,11 +88,13 @@ echo "[1/5] Compiling libhuey.so (aarch64-linux-android, ReleaseSmall)..."
   "$ROOT_DIR/src/sokol_impl.c" \
   "$ROOT_DIR/src/stb_truetype_impl.c"
 
-echo "[2/5] Linking base APK with aapt2..."
-rm -f "$UNALIGNED_APK" "$ALIGNED_APK" "$FINAL_APK"
+echo "[2/5] Compiling resources & linking base APK with aapt2..."
+rm -f "$UNALIGNED_APK" "$ALIGNED_APK" "$FINAL_APK" "$BUILD_DIR/res.zip"
+"$BUILD_TOOLS/aapt2" compile --dir "$ROOT_DIR/res" -o "$BUILD_DIR/res.zip"
 "$BUILD_TOOLS/aapt2" link \
   -I "$PLATFORM_JAR" \
   --manifest "$ROOT_DIR/AndroidManifest.xml" \
+  -R "$BUILD_DIR/res.zip" \
   -o "$UNALIGNED_APK"
 
 echo "[3/5] Packaging uncompressed native library into APK (extractNativeLibs=false)..."

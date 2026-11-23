@@ -778,7 +778,7 @@ fn mix4(a: [4]f32, b: [4]f32, t: f32) [4]f32 {
     };
 }
 
-fn rasterizeQuad(buf: []u8, phys_w: usize, phys_h: usize, q: core.QuadInstance) void {
+pub fn rasterizeQuad(buf: []u8, phys_w: usize, phys_h: usize, q: core.QuadInstance) void {
     if (!allFinite4(q.pos_size) or !allFinite4(q.params) or
         !allFinite4(q.color) or !allFinite4(q.border_color) or
         !allFinite4(q.clip_rect))

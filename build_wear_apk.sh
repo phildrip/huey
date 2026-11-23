@@ -64,11 +64,13 @@ echo "[1/5] Compiling libhuey.so (arm-linux-androideabi.24, ReleaseSmall)..."
   "$ROOT_DIR/src/sokol_impl.c" \
   "$ROOT_DIR/src/stb_truetype_impl.c"
 
-echo "[2/5] Linking base Wear OS APK with aapt2 (android-34)..."
-rm -f "$UNALIGNED_APK" "$ALIGNED_APK" "$FINAL_APK"
+echo "[2/5] Compiling Wear OS resources & linking base APK with aapt2 (android-34)..."
+rm -f "$UNALIGNED_APK" "$ALIGNED_APK" "$FINAL_APK" "$BUILD_DIR/res-wear.zip"
+"$BUILD_TOOLS/aapt2" compile --dir "$ROOT_DIR/res-wear" -o "$BUILD_DIR/res-wear.zip"
 "$BUILD_TOOLS/aapt2" link \
   -I "$PLATFORM_JAR" \
   --manifest "$ROOT_DIR/AndroidManifestWear.xml" \
+  -R "$BUILD_DIR/res-wear.zip" \
   -o "$UNALIGNED_APK"
 
 echo "[3/5] Packaging uncompressed native library into Wear OS APK (extractNativeLibs=false)..."
