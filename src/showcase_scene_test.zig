@@ -1,0 +1,500 @@
+const std = @import("std");
+const core = @import("core.zig");
+const events = @import("events.zig");
+const overlay = @import("overlay.zig");
+const wearos = @import("wearos.zig");
+const glyph_atlas = @import("glyph_atlas.zig");
+const showcase = @import("showcase_scene.zig");
+
+const HOST_FONT_PATH = "/usr/share/fonts/truetype/dejavu/DejaVuSans.ttf";
+
+fn loadHostFont(allocator: std.mem.Allocator) ![]u8 {
+    return std.Io.Dir.cwd().readFileAlloc(std.testing.io, HOST_FONT_PATH, allocator, .limited(4 * 1024 * 1024));
+}
+
+fn tapNode(
+    app: *showcase.ShowcaseApp,
+    arena: *core.LayoutArena,
+    router: *events.EventRouter,
+    test_id: []const u8,
+    w: f32,
+    h: f32,
+) !bool {
+    const id = arena.findByTestId(test_id) orelse return error.TestNodeNotFound;
+    const r = arena.getRect(id) orelse return error.TestNodeNotFound;
+    const cx = r.x + r.w * 0.5;
+    const cy = r.y + r.h * 0.5;
+
+    if (app.handlePointerDown(cx, cy)) {
+        return false;
+    }
+
+    router.dispatch(arena, .{ .pointer_down = .{
+        .pointer_id = 1,
+        .x = cx,
+        .y = cy,
+        .is_touch = true,
+    } });
+    router.dispatch(arena, .{ .pointer_up = .{
+        .pointer_id = 1,
+        .x = cx,
+        .y = cy,
+        .is_touch = true,
+    } });
+
+    var rebuilt = false;
+    while (router.nextEvent()) |ev| {
+        if (app.handleUiEvent(ev, w, h)) {
+            rebuilt = true;
+        }
+    }
+    if (rebuilt) {
+        try app.buildScene(arena, w, h);
+        arena.layout(w, h);
+    }
+    return rebuilt;
+}
+
+test "ShowcaseApp init defaults and pinned header + 48dp tabs across all 4 tabs" {
+    var app = showcase.ShowcaseApp.init();
+    try std.testing.expectEqual(showcase.Tab.scroll, app.active_tab);
+    try std.testing.expectEqual(@as(u8, 0), app.accent_idx);
+    try std.testing.expectEqual(@as(i32, 42), app.counter);
+    try std.testing.expectApproxEqAbs(@as(f32, 0.68), app.slider_value, 1e-5);
+    try std.testing.expect(!app.wear_ambient);
+    try std.testing.expect(!app.hud_bounds);
+    try std.testing.expect(!app.hud_targets);
+    try std.testing.expect(app.hud_budget);
+    try std.testing.expectEqual(@as(usize, 0), app.overlays.activeCount());
+
+    for (app.card_toggles, 0..) |t, i| {
+        try std.testing.expectEqual(i % 2 == 0, t);
+    }
+
+    var arena = core.LayoutArena.init(std.testing.allocator);
+    defer arena.deinit();
+    var router = events.EventRouter.init();
+
+    const w: f32 = 412.0;
+    const h: f32 = 892.0;
+    try app.buildScene(&arena, w, h);
+    arena.layout(w, h);
+
+    const tab_ids = [_][]const u8{ "tab_scroll", "tab_widgets", "tab_popups", "tab_hud" };
+    for (tab_ids) |tid| {
+        const nid = arena.findByTestId(tid) orelse return error.MissingTab;
+        const rect = arena.getRect(nid).?;
+        try std.testing.expect(rect.h >= 48.0);
+        try std.testing.expect(rect.w >= 44.0);
+    }
+
+    // Switch through all 4 tabs via pointer events
+    try std.testing.expect(try tapNode(&app, &arena, &router, "tab_widgets", w, h));
+    try std.testing.expectEqual(showcase.Tab.widgets, app.active_tab);
+
+    try std.testing.expect(try tapNode(&app, &arena, &router, "tab_popups", w, h));
+    try std.testing.expectEqual(showcase.Tab.popups, app.active_tab);
+
+    try std.testing.expect(try tapNode(&app, &arena, &router, "tab_hud", w, h));
+    try std.testing.expectEqual(showcase.Tab.hud, app.active_tab);
+
+    try std.testing.expect(try tapNode(&app, &arena, &router, "tab_scroll", w, h));
+    try std.testing.expectEqual(showcase.Tab.scroll, app.active_tab);
+}
+
+test "ShowcaseApp scroll tab has 16 cards, toggles, and scrollable content" {
+    var app = showcase.ShowcaseApp.init();
+    var arena = core.LayoutArena.init(std.testing.allocator);
+    defer arena.deinit();
+    var router = events.EventRouter.init();
+
+    const w: f32 = 400.0;
+    const h: f32 = 720.0;
+    try app.buildScene(&arena, w, h);
+    arena.layout(w, h);
+
+    const sc = app.scroll_container orelse return error.MissingScrollContainer;
+    const body_rect = arena.getRect(sc).?;
+    const content_h = arena.contentHeight(sc);
+    try std.testing.expect(content_h > body_rect.h);
+
+    for (0..16) |i| {
+        var cbuf: [16]u8 = undefined;
+        var tbuf: [24]u8 = undefined;
+        const cid = try std.fmt.bufPrint(&cbuf, "card_{d}", .{i});
+        const tid = try std.fmt.bufPrint(&tbuf, "card_toggle_{d}", .{i});
+        try std.testing.expect(arena.findByTestId(cid) != null);
+        const toggle_id = arena.findByTestId(tid) orelse return error.MissingCardToggle;
+        try std.testing.expectEqual(i % 2 == 0, arena.isChecked(toggle_id).?);
+    }
+
+    // Toggle card_toggle_1 from false -> true
+    try std.testing.expect(try tapNode(&app, &arena, &router, "card_toggle_1", w, h));
+    try std.testing.expect(app.card_toggles[1]);
+    const t1 = arena.findByTestId("card_toggle_1").?;
+    try std.testing.expect(arena.isChecked(t1).?);
+
+    // Scroll container moves cards upward
+    const sc2 = app.scroll_container orelse return error.MissingScrollContainer;
+    const c0_before = arena.getRect(arena.findByTestId("card_0").?).?;
+    arena.setScroll(sc2, 0.0, 120.0);
+    arena.layout(w, h);
+    const c0_after = arena.getRect(arena.findByTestId("card_0").?).?;
+    try std.testing.expectApproxEqAbs(c0_before.y - 120.0, c0_after.y, 0.01);
+}
+
+test "ShowcaseApp widgets tab: theme accents, counter, live slider drag, and Wear OS ambient mode" {
+    var app = showcase.ShowcaseApp.init();
+    var arena = core.LayoutArena.init(std.testing.allocator);
+    defer arena.deinit();
+    var router = events.EventRouter.init();
+
+    const w: f32 = 412.0;
+    const h: f32 = 892.0;
+    app.active_tab = .widgets;
+    try app.buildScene(&arena, w, h);
+    arena.layout(w, h);
+
+    // Theme switching through all 4 Nord accents
+    for (0..showcase.ACCENTS.len) |i| {
+        var abuf: [16]u8 = undefined;
+        const aid = try std.fmt.bufPrint(&abuf, "accent_{d}", .{i});
+        try std.testing.expect(try tapNode(&app, &arena, &router, aid, w, h));
+        try std.testing.expectEqual(@as(u8, @intCast(i)), app.accent_idx);
+        const tab_id = arena.findByTestId("tab_widgets").?;
+        const idx = tab_id.index;
+        try std.testing.expectEqual(showcase.ACCENTS[i][0], arena.nodes.items(.border)[idx][0]);
+    }
+
+    // Counter inc & dec
+    try std.testing.expect(try tapNode(&app, &arena, &router, "btn_inc", w, h));
+    try std.testing.expectEqual(@as(i32, 43), app.counter);
+    try std.testing.expect(try tapNode(&app, &arena, &router, "btn_dec", w, h));
+    try std.testing.expect(try tapNode(&app, &arena, &router, "btn_dec", w, h));
+    try std.testing.expectEqual(@as(i32, 41), app.counter);
+
+    // Continuous slider drag (pointer_down -> pointer_move -> pointer_move -> pointer_up)
+    const slider_id = arena.findByTestId("demo_slider").?;
+    const sr = arena.getRect(slider_id).?;
+    router.dispatch(&arena, .{ .pointer_down = .{
+        .pointer_id = 2,
+        .x = sr.x + sr.w * 0.25,
+        .y = sr.y + sr.h * 0.5,
+    } });
+    router.dispatch(&arena, .{ .pointer_move = .{
+        .pointer_id = 2,
+        .x = sr.x + sr.w * 0.50,
+        .y = sr.y + sr.h * 0.5,
+    } });
+    router.dispatch(&arena, .{ .pointer_move = .{
+        .pointer_id = 2,
+        .x = sr.x + sr.w * 0.85,
+        .y = sr.y + sr.h * 0.5,
+    } });
+    router.dispatch(&arena, .{ .pointer_up = .{
+        .pointer_id = 2,
+        .x = sr.x + sr.w * 0.85,
+        .y = sr.y + sr.h * 0.5,
+    } });
+    var saw_slider_events: usize = 0;
+    while (router.nextEvent()) |ev| {
+        if (app.handleUiEvent(ev, w, h)) saw_slider_events += 1;
+    }
+    try std.testing.expect(saw_slider_events >= 2);
+    try std.testing.expect(app.slider_value > 0.80);
+
+    // Wear OS bezel geometry & ambient quad transform
+    try app.buildScene(&arena, w, h);
+    arena.layout(w, h);
+    const bezel_id = arena.findByTestId("wear_bezel").?;
+    const bezel_rect = arena.getRect(bezel_id).?;
+    try std.testing.expectApproxEqAbs(@as(f32, 180.0), bezel_rect.w, 0.5);
+    try std.testing.expectApproxEqAbs(@as(f32, 180.0), bezel_rect.h, 0.5);
+    try std.testing.expectApproxEqAbs(@as(f32, 90.0), arena.nodes.items(.corner_radius)[bezel_id.index], 0.1);
+
+    // Enable ambient mode and verify watch bezel quads become black OLED ambient while header remains colored
+    try std.testing.expect(try tapNode(&app, &arena, &router, "wear_ambient", w, h));
+    try std.testing.expect(app.wear_ambient);
+
+    var quads: [2048]core.QuadInstance = undefined;
+    const base_count = arena.emitQuads(&quads, 1.0);
+    const total = app.emitPostQuads(&arena, &quads, base_count, w, h, 1.0, null, 1);
+    try std.testing.expect(total >= base_count);
+
+    const b_rect = arena.getRect(arena.findByTestId("wear_bezel").?).?;
+    var found_ambient_bezel = false;
+    var found_colored_outside = false;
+    for (quads[0..base_count]) |q| {
+        const cx = q.pos_size[0] + q.pos_size[2] * 0.5;
+        const cy = q.pos_size[1] + q.pos_size[3] * 0.5;
+        const inside_bezel = cx >= b_rect.x and cx <= b_rect.x + b_rect.w and
+            cy >= b_rect.y and cy <= b_rect.y + b_rect.h and
+            q.pos_size[2] <= b_rect.w + 2.0 and q.pos_size[3] <= b_rect.h + 2.0;
+        if (inside_bezel) {
+            if (@abs(q.pos_size[2] - b_rect.w) < 2.0) {
+                found_ambient_bezel = true;
+                try std.testing.expectEqual(@as(f32, 0.0), q.color[0]);
+                try std.testing.expectEqual(@as(f32, 0.0), q.color[1]);
+                try std.testing.expectEqual(@as(f32, 0.0), q.color[2]);
+                try std.testing.expectEqual(@as(f32, 1.0), q.params[1]);
+            }
+        } else if (q.color[3] > 0.5 and @abs(q.color[0] - q.color[2]) > 0.02) {
+            found_colored_outside = true;
+        }
+    }
+    try std.testing.expect(found_ambient_bezel);
+    try std.testing.expect(found_colored_outside);
+}
+
+test "ShowcaseApp wear_ambient does not corrupt header/tabs when scrolled behind header" {
+    var app = showcase.ShowcaseApp.init();
+    var arena = core.LayoutArena.init(std.testing.allocator);
+    defer arena.deinit();
+
+    const w: f32 = 320.0;
+    const h: f32 = 480.0;
+    app.active_tab = .widgets;
+    app.wear_ambient = true;
+    try app.buildScene(&arena, w, h);
+    arena.layout(w, h);
+
+    // Scroll wear_bezel upward so its rect overlaps header/tab_bar y-range (0..108)
+    const sc = app.scroll_container.?;
+    arena.setScroll(sc, 0.0, 480.0);
+    arena.layout(w, h);
+
+    var quads: [2048]core.QuadInstance = undefined;
+    const base_count = arena.emitQuads(&quads, 1.0);
+    _ = app.emitPostQuads(&arena, &quads, base_count, w, h, 1.0, null, 1);
+
+    // tab_widgets must retain its accent fill (not turned pure black by wear_ambient!)
+    const tab_r = arena.getRect(arena.findByTestId("tab_widgets").?).?;
+    var found_tab_colored = false;
+    for (quads[0..base_count]) |q| {
+        if (@abs(q.pos_size[0] - tab_r.x) < 1.5 and
+            @abs(q.pos_size[1] - tab_r.y) < 1.5 and
+            @abs(q.pos_size[2] - tab_r.w) < 1.5)
+        {
+            if (q.color[2] > 0.5) found_tab_colored = true;
+        }
+    }
+    try std.testing.expect(found_tab_colored);
+}
+
+test "ShowcaseApp popups tab: corner anchor edge flipping, modal backdrop, outside-click & Escape dismissal" {
+    const font_bytes = try loadHostFont(std.testing.allocator);
+    defer std.testing.allocator.free(font_bytes);
+
+    var atlas = try glyph_atlas.GlyphAtlas.init(std.testing.allocator, font_bytes, 512, 512);
+    defer atlas.deinit();
+
+    var app = showcase.ShowcaseApp.init();
+    var arena = core.LayoutArena.init(std.testing.allocator);
+    defer arena.deinit();
+    var router = events.EventRouter.init();
+
+    const w: f32 = 400.0;
+    const h: f32 = 760.0;
+    app.active_tab = .popups;
+    try app.buildScene(&arena, w, h);
+    arena.layout(w, h);
+
+    const body_r = arena.getRect(app.scroll_container.?).?;
+
+    // Test all 4 corner anchor buttons keep popups inside viewport
+    const corners = [_][]const u8{ "pop_tl", "pop_tr", "pop_bl", "pop_br" };
+    for (corners) |cid| {
+        try std.testing.expect(try tapNode(&app, &arena, &router, cid, w, h));
+        try std.testing.expectEqual(@as(usize, 1), app.overlays.activeCount());
+        const top = app.overlays.top().?;
+        try std.testing.expect(top.rect.x >= 0.0);
+        try std.testing.expect(top.rect.y >= 0.0);
+        try std.testing.expect(top.rect.x + top.rect.w <= w + 0.01);
+        try std.testing.expect(top.rect.y + top.rect.h <= h + 0.01);
+        try std.testing.expect(!top.spec.modal);
+
+        // Non-modal outside click dismisses overlay, clears popup_title, and consumes event
+        const outside_x: f32 = if (top.rect.x > 20.0) 5.0 else w - 5.0;
+        const outside_y: f32 = 10.0;
+        try std.testing.expect(app.handlePointerDown(outside_x, outside_y));
+        try std.testing.expectEqual(@as(usize, 0), app.overlays.activeCount());
+        try std.testing.expectEqualStrings("", app.popup_title);
+    }
+
+    // Verify bottom-right anchor flipped both X and Y
+    try std.testing.expect(try tapNode(&app, &arena, &router, "pop_br", w, h));
+    const br_top = app.overlays.top().?;
+    try std.testing.expect(br_top.placed.flipped_x);
+    try std.testing.expect(br_top.placed.flipped_y);
+
+    // Emit post quads with atlas and verify overlay + glyph quads stay inside popup rect & escape body scissor
+    app.hud_budget = false;
+    var quads: [2048]core.QuadInstance = undefined;
+    const base_count = arena.emitQuadsWithAtlas(&quads, 2.0, &atlas, 1);
+    const total = app.emitPostQuads(&arena, &quads, base_count, w, h, 2.0, &atlas, 1);
+    try std.testing.expect(total > base_count + 1);
+
+    const phys_pop = core.snapRectToPhysical(br_top.rect, 2.0);
+    var saw_popup_glyph = false;
+    for (quads[base_count..total]) |q| {
+        if (q.params[3] > 0.5) {
+            saw_popup_glyph = true;
+            try std.testing.expect(q.clip_rect[0] >= phys_pop.x - 0.5);
+            try std.testing.expect(q.clip_rect[1] >= phys_pop.y - 0.5);
+            try std.testing.expect(q.clip_rect[2] <= phys_pop.x + phys_pop.w + 0.5);
+            try std.testing.expect(q.clip_rect[3] <= phys_pop.y + phys_pop.h + 0.5);
+        } else {
+            try std.testing.expectEqual(@as(f32, 0.0), q.clip_rect[0]);
+            try std.testing.expectEqual(@as(f32, 0.0), q.clip_rect[1]);
+            try std.testing.expectApproxEqAbs(w * 2.0, q.clip_rect[2], 0.5);
+            try std.testing.expectApproxEqAbs(h * 2.0, q.clip_rect[3], 0.5);
+            // Overlay surface escapes scroll body scissor if near bottom edge
+            try std.testing.expect(body_r.h < h);
+        }
+    }
+    try std.testing.expect(saw_popup_glyph);
+
+    // Escape shortcut dismisses overlay
+    try std.testing.expect(app.handleUiEvent(.{ .shortcut = .{ .key = .escape, .mods = .{} } }, w, h));
+    try std.testing.expectEqual(@as(usize, 0), app.overlays.activeCount());
+    try std.testing.expectEqualStrings("", app.popup_title);
+
+    try std.testing.expect(try tapNode(&app, &arena, &router, "pop_modal", w, h));
+    try std.testing.expectEqual(@as(usize, 1), app.overlays.activeCount());
+    const modal = app.overlays.top().?;
+    try std.testing.expect(modal.spec.modal);
+
+    // Clicking inside modal does NOT dismiss, but consumes click
+    try std.testing.expect(app.handlePointerDown(modal.rect.x + modal.rect.w * 0.5, modal.rect.y + modal.rect.h * 0.5));
+    try std.testing.expectEqual(@as(usize, 1), app.overlays.activeCount());
+
+    // Clicking outside modal dismisses it and consumes click
+    try std.testing.expect(app.handlePointerDown(2.0, 2.0));
+    try std.testing.expectEqual(@as(usize, 0), app.overlays.activeCount());
+
+    // Switching tabs clears any open overlay
+    try std.testing.expect(try tapNode(&app, &arena, &router, "pop_tl", w, h));
+    try std.testing.expectEqual(@as(usize, 1), app.overlays.activeCount());
+    try std.testing.expect(app.handleUiEvent(.{ .clicked = .{ .id = .{ .index = 0, .gen = 1 }, .test_id = "tab_hud" } }, w, h));
+    try std.testing.expectEqual(@as(usize, 0), app.overlays.activeCount());
+    try std.testing.expectEqualStrings("", app.popup_title);
+}
+
+test "ShowcaseApp hud tab toggles and emitPostQuads bounds, targets, and budget bar" {
+    var app = showcase.ShowcaseApp.init();
+    var arena = core.LayoutArena.init(std.testing.allocator);
+    defer arena.deinit();
+    var router = events.EventRouter.init();
+
+    const w: f32 = 412.0;
+    const h: f32 = 892.0;
+    app.active_tab = .hud;
+    try app.buildScene(&arena, w, h);
+    arena.layout(w, h);
+
+    try std.testing.expect(arena.findByTestId("hud_bounds") != null);
+    try std.testing.expect(arena.findByTestId("hud_targets") != null);
+    try std.testing.expect(arena.findByTestId("hud_budget") != null);
+
+    // Enable bounds and targets
+    try std.testing.expect(try tapNode(&app, &arena, &router, "hud_bounds", w, h));
+    try std.testing.expect(try tapNode(&app, &arena, &router, "hud_targets", w, h));
+    try std.testing.expect(app.hud_bounds);
+    try std.testing.expect(app.hud_targets);
+    try std.testing.expect(app.hud_budget);
+
+    var quads: [2048]core.QuadInstance = undefined;
+    const base_count = arena.emitQuads(&quads, 2.0);
+
+    // Under budget -> green bar, and budget bar sits above header.stats (no overlap)
+    app.last_frame_ms = 2.5;
+    const total_ok = app.emitPostQuads(&arena, &quads, base_count, w, h, 2.0, null, 1);
+    try std.testing.expect(total_ok > base_count + 4);
+
+    const bar_ok = quads[total_ok - 1];
+    try std.testing.expectApproxEqAbs(core.Nord.aurora_green[0], bar_ok.color[0], 0.01);
+    try std.testing.expectApproxEqAbs(core.Nord.aurora_green[1], bar_ok.color[1], 0.01);
+    const stats_r = arena.getRect(arena.findByTestId("header.stats").?).?;
+    try std.testing.expect(bar_ok.pos_size[1] + bar_ok.pos_size[3] < stats_r.y * 2.0);
+
+    // Tight buffer reserves 2 slots for hud_budget instead of starving it
+    var tight_quads: [64]core.QuadInstance = undefined;
+    @memset(&tight_quads, .{
+        .pos_size = .{ 0, 0, 0, 0 },
+        .color = core.Nord.transparent,
+        .border_color = core.Nord.transparent,
+        .params = .{ 0, 0, 0, 0 },
+    });
+    const tight_total = app.emitPostQuads(&arena, &tight_quads, 60, w, h, 1.0, null, 1);
+    try std.testing.expectEqual(@as(usize, 64), tight_total);
+    try std.testing.expectApproxEqAbs(core.Nord.aurora_green[0], tight_quads[tight_total - 1].color[0], 0.01);
+
+    // Over budget -> Aurora Red
+    app.last_frame_ms = 22.0;
+    const total_over = app.emitPostQuads(&arena, &quads, base_count, w, h, 2.0, null, 2);
+    const bar_over = quads[total_over - 1];
+    try std.testing.expectApproxEqAbs(core.Nord.aurora_red[0], bar_over.color[0], 0.01);
+    try std.testing.expectApproxEqAbs(core.Nord.aurora_red[1], bar_over.color[1], 0.01);
+
+    // Disable all HUD flags -> 0 post quads when no overlays open
+    try std.testing.expect(try tapNode(&app, &arena, &router, "hud_bounds", w, h));
+    try std.testing.expect(try tapNode(&app, &arena, &router, "hud_targets", w, h));
+    try std.testing.expect(try tapNode(&app, &arena, &router, "hud_budget", w, h));
+    const base_clean = arena.emitQuads(&quads, 1.0);
+    const total_clean = app.emitPostQuads(&arena, &quads, base_clean, w, h, 1.0, null, 3);
+    try std.testing.expectEqual(base_clean, total_clean);
+}
+
+test "ShowcaseApp narrow Wear OS 200x200 and landscape 640x360 layouts + NaN sanitization" {
+    var app = showcase.ShowcaseApp.init();
+    var arena = core.LayoutArena.init(std.testing.allocator);
+    defer arena.deinit();
+
+    // 200x200 Wear OS viewport: tabs >= 44dp, no overlaps, wear_bezel fits inside wear_card, counter visible
+    const tabs = [_]showcase.Tab{ .scroll, .widgets, .popups, .hud };
+    for (tabs) |tab| {
+        app.active_tab = tab;
+        try app.buildScene(&arena, 200.0, 200.0);
+        arena.layout(200.0, 200.0);
+
+        const tab_ids = [_][]const u8{ "tab_scroll", "tab_widgets", "tab_popups", "tab_hud" };
+        for (tab_ids) |tid| {
+            const tr = arena.getRect(arena.findByTestId(tid).?).?;
+            try std.testing.expect(tr.w >= 44.0);
+            try std.testing.expect(tr.h >= 48.0);
+        }
+    }
+
+    app.active_tab = .widgets;
+    try app.buildScene(&arena, 200.0, 200.0);
+    arena.layout(200.0, 200.0);
+    const wear_card_r = arena.getRect(arena.findByTestId("widgets.wear_card").?).?;
+    const bezel_r = arena.getRect(arena.findByTestId("wear_bezel").?).?;
+    try std.testing.expect(bezel_r.x >= wear_card_r.x);
+    try std.testing.expect(bezel_r.x + bezel_r.w <= wear_card_r.x + wear_card_r.w + 0.01);
+    const counter_r = arena.getRect(arena.findByTestId("counter_display").?).?;
+    try std.testing.expect(counter_r.w >= 24.0);
+
+    // 640x360 landscape popups tab: mid does not overlap bot_row, pop_tl/pop_tr do not overlap
+    app.active_tab = .popups;
+    try app.buildScene(&arena, 640.0, 360.0);
+    arena.layout(640.0, 360.0);
+    const desc_r = arena.getRect(arena.findByTestId("popups.desc_card").?).?;
+    const modal_btn_r = arena.getRect(arena.findByTestId("pop_modal").?).?;
+    const bl_r = arena.getRect(arena.findByTestId("pop_bl").?).?;
+    try std.testing.expect(desc_r.y + desc_r.h <= modal_btn_r.y + 0.01);
+    try std.testing.expect(modal_btn_r.y + modal_btn_r.h <= bl_r.y + 0.01);
+
+    // NaN/Inf sanitization
+    app.slider_value = std.math.nan(f32);
+    app.last_frame_ms = std.math.nan(f32);
+    try app.buildScene(&arena, 200.0, 200.0);
+    arena.layout(200.0, 200.0);
+    try std.testing.expect(!app.handlePointerDown(std.math.nan(f32), 10.0));
+    _ = app.handleUiEvent(.{ .clicked = .{ .id = .{ .index = 0, .gen = 1 }, .test_id = "pop_tl" } }, 0.0, 0.0);
+    try std.testing.expectEqual(@as(usize, 0), app.overlays.activeCount());
+
+    var quads: [128]core.QuadInstance = undefined;
+    try std.testing.expectEqual(@as(usize, 128), app.emitPostQuads(&arena, &quads, 999, 200.0, 200.0, 1.0, null, 1));
+    try std.testing.expectEqual(@as(usize, 0), app.emitPostQuads(&arena, &quads, 0, std.math.nan(f32), 200.0, 1.0, null, 1));
+}

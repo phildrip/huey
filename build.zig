@@ -88,21 +88,31 @@ pub fn build(b: *std.Build) void {
     });
     test_step.dependOn(&b.addRunArtifact(c_abi_test).step);
 
-    // glyph_atlas_test.zig (src/stb_truetype_impl.c + -I vendor + libc + libm)
-    const glyph_mod = b.createModule(.{
-        .root_source_file = b.path("src/glyph_atlas_test.zig"),
-        .target = target,
-        .optimize = optimize,
-        .link_libc = true,
-    });
-    glyph_mod.addIncludePath(b.path("vendor"));
-    glyph_mod.addCSourceFile(.{
-        .file = b.path("src/stb_truetype_impl.c"),
-    });
-    glyph_mod.linkSystemLibrary("m", .{});
-    const glyph_test = b.addTest(.{
-        .name = "glyph_atlas_test",
-        .root_module = glyph_mod,
-    });
-    test_step.dependOn(&b.addRunArtifact(glyph_test).step);
+    // stb_truetype-backed test suites (-I vendor + src/stb_truetype_impl.c + libc + libm)
+    const stb_test_suites = [_]struct {
+        name: []const u8,
+        path: []const u8,
+    }{
+        .{ .name = "glyph_atlas_test", .path = "src/glyph_atlas_test.zig" },
+        .{ .name = "showcase_scene_test", .path = "src/showcase_scene_test.zig" },
+    };
+
+    for (stb_test_suites) |suite| {
+        const stb_mod = b.createModule(.{
+            .root_source_file = b.path(suite.path),
+            .target = target,
+            .optimize = optimize,
+            .link_libc = true,
+        });
+        stb_mod.addIncludePath(b.path("vendor"));
+        stb_mod.addCSourceFile(.{
+            .file = b.path("src/stb_truetype_impl.c"),
+        });
+        stb_mod.linkSystemLibrary("m", .{});
+        const stb_test = b.addTest(.{
+            .name = suite.name,
+            .root_module = stb_mod,
+        });
+        test_step.dependOn(&b.addRunArtifact(stb_test).step);
+    }
 }

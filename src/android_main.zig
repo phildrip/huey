@@ -3,6 +3,7 @@ const core = @import("core.zig");
 const events = @import("events.zig");
 const glyph_atlas = @import("glyph_atlas.zig");
 const renderer = @import("renderer.zig");
+const showcase_scene = @import("showcase_scene.zig");
 const virtual_scroll = @import("virtual_scroll.zig");
 
 const c = @cImport({
@@ -373,12 +374,13 @@ fn motionEventSeconds(ev: *const c.AInputEvent) f64 {
 fn applyScroll(
     arena: *core.LayoutArena,
     scroller: *const virtual_scroll.InertialScroller,
+    scroll_target: ?core.NodeId,
     egl_w: c.EGLint,
     egl_h: c.EGLint,
     scale_factor: f32,
 ) void {
-    if (arena.getRoot()) |root| {
-        arena.setScroll(root, 0.0, @floatCast(scroller.offset));
+    if (scroll_target orelse arena.getRoot()) |target| {
+        arena.setScroll(target, 0.0, @floatCast(scroller.offset));
     }
     if (egl_w > 0 and egl_h > 0) {
         const lw = @as(f32, @floatFromInt(egl_w)) / scale_factor;
@@ -390,6 +392,7 @@ fn applyScroll(
 fn layoutAndSyncScroll(
     arena: *core.LayoutArena,
     scroller: *virtual_scroll.InertialScroller,
+    scroll_target: ?core.NodeId,
     egl_w: c.EGLint,
     egl_h: c.EGLint,
     scale_factor: f32,
@@ -398,15 +401,68 @@ fn layoutAndSyncScroll(
     const lw = @as(f32, @floatFromInt(egl_w)) / scale_factor;
     const lh = @as(f32, @floatFromInt(egl_h)) / scale_factor;
     arena.layout(lw, lh);
-    if (arena.getRoot()) |root| {
-        const ch = arena.contentHeight(root);
-        const max_s = @max(0.0, @as(f64, ch) - @as(f64, arena.viewport_h));
+    if (scroll_target orelse arena.getRoot()) |target| {
+        const ch = arena.contentHeight(target);
+        const view_h = if (arena.getRect(target)) |r| r.h else arena.viewport_h;
+        const max_s = @max(0.0, @as(f64, ch) - @as(f64, view_h));
         scroller.setMaxScroll(max_s);
-        arena.setScroll(root, 0.0, @floatCast(scroller.offset));
+        arena.setScroll(target, 0.0, @floatCast(scroller.offset));
         if (arena.layout_dirty) {
             arena.layout(lw, lh);
         }
     }
+}
+
+fn rebuildShowcaseAndSync(
+    showcase: *showcase_scene.ShowcaseApp,
+    arena: *core.LayoutArena,
+    scroller: *virtual_scroll.InertialScroller,
+    router: *events.EventRouter,
+    egl_w: c.EGLint,
+    egl_h: c.EGLint,
+    scale_factor: f32,
+) void {
+    var cap_buf: [64]u8 = undefined;
+    var cap_len: usize = 0;
+    if (router.captured_node) |cid| {
+        if (arena.getTestId(cid)) |tid| {
+            if (tid.len > 0 and tid.len <= cap_buf.len) {
+                @memcpy(cap_buf[0..tid.len], tid);
+                cap_len = tid.len;
+            }
+        }
+    }
+    const lw: f32 = if (egl_w > 0) @as(f32, @floatFromInt(egl_w)) / scale_factor else 768.0;
+    const lh: f32 = if (egl_h > 0) @as(f32, @floatFromInt(egl_h)) / scale_factor else 1024.0;
+    showcase.buildScene(arena, lw, lh) catch |err| {
+        logErr("showcase.buildScene failed: %s", .{@errorName(err).ptr});
+        return;
+    };
+    if (egl_w > 0 and egl_h > 0) {
+        layoutAndSyncScroll(arena, scroller, showcase.scroll_container, egl_w, egl_h, scale_factor);
+    } else {
+        arena.layout(lw, lh);
+    }
+    if (cap_len > 0) {
+        if (arena.findByTestId(cap_buf[0..cap_len])) |new_id| {
+            router.captured_node = new_id;
+        }
+    }
+}
+
+fn isTouchInScrollArea(
+    arena: *const core.LayoutArena,
+    showcase: *const showcase_scene.ShowcaseApp,
+    px: f32,
+    py: f32,
+) bool {
+    if (showcase.overlays.activeCount() > 0) return false;
+    if (showcase.scroll_container) |sc| {
+        if (arena.getRect(sc)) |r| {
+            return px >= r.x and px <= r.x + r.w and py >= r.y and py <= r.y + r.h;
+        }
+    }
+    return py >= 108.0;
 }
 
 const VsyncState = struct {
@@ -466,8 +522,9 @@ fn workerMain(arg: ?*anyopaque) callconv(.c) ?*anyopaque {
 
     var arena = core.LayoutArena.init(std.heap.c_allocator);
     defer arena.deinit();
-    core.buildDemoScene(&arena) catch {
-        logErr("buildDemoScene failed", .{});
+    var showcase = showcase_scene.ShowcaseApp.init();
+    showcase.buildScene(&arena, 768.0, 1024.0) catch {
+        logErr("showcase.buildScene failed", .{});
         _ = c.pthread_mutex_lock(&state.mutex);
         state.startup_failed = true;
         state.worker_exited = true;
@@ -577,7 +634,7 @@ fn workerMain(arg: ?*anyopaque) callconv(.c) ?*anyopaque {
                                         if (atlas_ptr) |a| {
                                             a.dirty = true;
                                         }
-                                        layoutAndSyncScroll(&arena, &scroller, egl.width, egl.height, scale_factor);
+                                        rebuildShowcaseAndSync(&showcase, &arena, &scroller, &router, egl.width, egl.height, scale_factor);
                                         arena.requestRedraw();
                                     } else |_| {
                                         logErr("Renderer.init failed", .{});
@@ -603,8 +660,8 @@ fn workerMain(arg: ?*anyopaque) callconv(.c) ?*anyopaque {
                                 scroller.animating = false;
                                 scroller.velocity = 0.0;
                                 scroller.offset = std.math.clamp(scroller.offset, 0.0, scroller.max_scroll);
-                                if (arena.getRoot()) |root| {
-                                    arena.setScroll(root, 0.0, @floatCast(scroller.offset));
+                                if (showcase.scroll_container orelse arena.getRoot()) |target| {
+                                    arena.setScroll(target, 0.0, @floatCast(scroller.offset));
                                 }
                             }
                             router.dispatch(&arena, .focus_lost);
@@ -627,7 +684,7 @@ fn workerMain(arg: ?*anyopaque) callconv(.c) ?*anyopaque {
                                         egl.height = nh;
                                     }
                                     if (egl.width > 0 and egl.height > 0) {
-                                        layoutAndSyncScroll(&arena, &scroller, egl.width, egl.height, scale_factor);
+                                        rebuildShowcaseAndSync(&showcase, &arena, &scroller, &router, egl.width, egl.height, scale_factor);
                                         arena.requestRedraw();
                                     }
                                 }
@@ -671,7 +728,7 @@ fn workerMain(arg: ?*anyopaque) callconv(.c) ?*anyopaque {
                                 a.setScaleFactor(scale_factor);
                             }
                             if (egl.width > 0 and egl.height > 0) {
-                                layoutAndSyncScroll(&arena, &scroller, egl.width, egl.height, scale_factor);
+                                rebuildShowcaseAndSync(&showcase, &arena, &scroller, &router, egl.width, egl.height, scale_factor);
                                 arena.requestRedraw();
                             }
                         },
@@ -730,7 +787,11 @@ fn workerMain(arg: ?*anyopaque) callconv(.c) ?*anyopaque {
                                         const is_touch = c.AMotionEvent_getToolType(ev, 0) != c.AMOTION_EVENT_TOOL_TYPE_MOUSE;
                                         const btn = MouseButtonTracker.buttonFromEvent(ev, is_touch);
                                         if (!is_touch) mouse_buttons.recordDown(pid, btn);
-                                        if (is_touch) {
+                                        if (showcase.handlePointerDown(px, py)) {
+                                            touch_scroll.reset();
+                                            arena.requestRedraw();
+                                        } else if (is_touch) {
+                                            const can_scroll = isTouchInScrollArea(&arena, &showcase, px, py);
                                             const was_animating = scroller.isAnimating();
                                             scroller.animating = false;
                                             scroller.dragging = false;
@@ -739,12 +800,23 @@ fn workerMain(arg: ?*anyopaque) callconv(.c) ?*anyopaque {
                                             anim_frames = 0;
                                             anim_dt_sum_ms = 0.0;
                                             anim_render_sum_ms = 0.0;
-                                            touch_scroll.active_pointer = pid;
-                                            touch_scroll.down_y = py;
-                                            touch_scroll.down_t = motionEventSeconds(ev);
-                                            touch_scroll.scrolling = false;
-                                            touch_scroll.caught_fling = was_animating;
-                                            if (!was_animating) {
+                                            if (can_scroll) {
+                                                touch_scroll.active_pointer = pid;
+                                                touch_scroll.down_y = py;
+                                                touch_scroll.down_t = motionEventSeconds(ev);
+                                                touch_scroll.scrolling = false;
+                                                touch_scroll.caught_fling = was_animating;
+                                                if (!was_animating) {
+                                                    router.dispatch(&arena, .{ .pointer_down = .{
+                                                        .pointer_id = pid,
+                                                        .x = px,
+                                                        .y = py,
+                                                        .button = btn,
+                                                        .is_touch = is_touch,
+                                                    } });
+                                                }
+                                            } else {
+                                                touch_scroll.reset();
                                                 router.dispatch(&arena, .{ .pointer_down = .{
                                                     .pointer_id = pid,
                                                     .x = px,
@@ -774,7 +846,10 @@ fn workerMain(arg: ?*anyopaque) callconv(.c) ?*anyopaque {
                                         const btn = MouseButtonTracker.buttonFromEvent(ev, is_touch);
                                         if (!is_touch) mouse_buttons.recordDown(pid, btn);
                                         const allow_dispatch = if (is_touch) (touch_scroll.active_pointer == null and !touch_scroll.scrolling and !touch_scroll.caught_fling) else !touch_scroll.scrolling;
-                                        if (allow_dispatch) {
+                                        if (btn == .primary and showcase.handlePointerDown(px, py)) {
+                                            touch_scroll.reset();
+                                            arena.requestRedraw();
+                                        } else if (allow_dispatch) {
                                             router.dispatch(&arena, .{ .pointer_down = .{
                                                 .pointer_id = pid,
                                                 .x = px,
@@ -798,8 +873,8 @@ fn workerMain(arg: ?*anyopaque) callconv(.c) ?*anyopaque {
                                         if (is_active_scroll_ptr) {
                                             if (touch_scroll.scrolling) {
                                                 scroller.updateDrag(@as(f64, py), ev_t);
-                                                if (arena.getRoot()) |root| {
-                                                    arena.setScroll(root, 0.0, @floatCast(scroller.offset));
+                                                if (showcase.scroll_container orelse arena.getRoot()) |target| {
+                                                    arena.setScroll(target, 0.0, @floatCast(scroller.offset));
                                                 }
                                                 continue;
                                             }
@@ -810,8 +885,8 @@ fn workerMain(arg: ?*anyopaque) callconv(.c) ?*anyopaque {
                                                 }
                                                 scroller.beginDrag(@as(f64, touch_scroll.down_y), touch_scroll.down_t);
                                                 scroller.updateDrag(@as(f64, py), ev_t);
-                                                if (arena.getRoot()) |root| {
-                                                    arena.setScroll(root, 0.0, @floatCast(scroller.offset));
+                                                if (showcase.scroll_container orelse arena.getRoot()) |target| {
+                                                    arena.setScroll(target, 0.0, @floatCast(scroller.offset));
                                                 }
                                                 continue;
                                             }
@@ -991,7 +1066,7 @@ fn workerMain(arg: ?*anyopaque) callconv(.c) ?*anyopaque {
                                         anim_dt_sum_ms = 0.0;
                                         anim_render_sum_ms = 0.0;
                                         scroller.onWheel(-@as(f64, dy) * 48.0);
-                                        applyScroll(&arena, &scroller, egl.width, egl.height, scale_factor);
+                                        applyScroll(&arena, &scroller, showcase.scroll_container, egl.width, egl.height, scale_factor);
                                         handled = 1;
                                     }
                                 },
@@ -1011,6 +1086,10 @@ fn workerMain(arg: ?*anyopaque) callconv(.c) ?*anyopaque {
 
         if (quit) break;
 
+        const lw_cur: f32 = if (egl.width > 0) @as(f32, @floatFromInt(egl.width)) / scale_factor else 768.0;
+        const lh_cur: f32 = if (egl.height > 0) @as(f32, @floatFromInt(egl.height)) / scale_factor else 1024.0;
+        var need_rebuild = false;
+        var tab_changed = false;
         for (router.pollEvents()) |ui_ev| {
             switch (ui_ev) {
                 .toggled => |t| {
@@ -1041,8 +1120,28 @@ fn workerMain(arg: ?*anyopaque) callconv(.c) ?*anyopaque {
                 },
                 else => {},
             }
+            const before_tab = showcase.active_tab;
+            if (showcase.handleUiEvent(ui_ev, lw_cur, lh_cur)) {
+                need_rebuild = true;
+                if (showcase.active_tab != before_tab) {
+                    tab_changed = true;
+                }
+            }
         }
         router.clearEvents();
+        if (need_rebuild) {
+            if (tab_changed) {
+                scroller.offset = 0.0;
+                scroller.velocity = 0.0;
+                scroller.animating = false;
+                scroller.dragging = false;
+                touch_scroll.reset();
+                router.captured_node = null;
+                router.captured_pointer_id = null;
+            }
+            rebuildShowcaseAndSync(&showcase, &arena, &scroller, &router, egl.width, egl.height, scale_factor);
+            arena.requestRedraw();
+        }
 
         const has_surface_now = (window != null and egl.surface != c.EGL_NO_SURFACE and rend.initialized);
         var should_render = false;
@@ -1064,7 +1163,7 @@ fn workerMain(arg: ?*anyopaque) callconv(.c) ?*anyopaque {
                 last_anim_time_s = now_s;
                 frame_was_animating = true;
                 _ = scroller.step(frame_dt_s);
-                applyScroll(&arena, &scroller, egl.width, egl.height, scale_factor);
+                applyScroll(&arena, &scroller, showcase.scroll_container, egl.width, egl.height, scale_factor);
                 arena.requestRedraw();
             } else {
                 last_anim_time_s = null;
@@ -1082,8 +1181,8 @@ fn workerMain(arg: ?*anyopaque) callconv(.c) ?*anyopaque {
                 if (scroller.isAnimating()) {
                     frame_was_animating = true;
                     _ = scroller.step(frame_dt_s);
-                    if (arena.getRoot()) |root| {
-                        arena.setScroll(root, 0.0, @floatCast(scroller.offset));
+                    if (showcase.scroll_container orelse arena.getRoot()) |target| {
+                        arena.setScroll(target, 0.0, @floatCast(scroller.offset));
                     }
                     arena.requestRedraw();
                 }
@@ -1100,14 +1199,15 @@ fn workerMain(arg: ?*anyopaque) callconv(.c) ?*anyopaque {
             var t1: c.struct_timespec = undefined;
             _ = c.clock_gettime(c.CLOCK_MONOTONIC, &t0);
 
+            const lw: f32 = if (egl.width > 0) @as(f32, @floatFromInt(egl.width)) / scale_factor else 768.0;
+            const lh: f32 = if (egl.height > 0) @as(f32, @floatFromInt(egl.height)) / scale_factor else 1024.0;
             if (arena.layout_dirty and egl.width > 0 and egl.height > 0) {
-                const lw = @as(f32, @floatFromInt(egl.width)) / scale_factor;
-                const lh = @as(f32, @floatFromInt(egl.height)) / scale_factor;
                 arena.layout(lw, lh);
             }
 
             frame_idx +%= 1;
-            const quad_count = arena.emitQuadsWithAtlas(quad_buf, scale_factor, atlas_ptr, frame_idx);
+            const base_quads = arena.emitQuadsWithAtlas(quad_buf, scale_factor, atlas_ptr, frame_idx);
+            const quad_count = showcase.emitPostQuads(&arena, quad_buf, base_quads, lw, lh, scale_factor, atlas_ptr, frame_idx);
             if (atlas_ptr) |a| {
                 if (a.dirty) {
                     rend.uploadAtlas(a.pixels, a.width, a.height);
@@ -1130,7 +1230,7 @@ fn workerMain(arg: ?*anyopaque) callconv(.c) ?*anyopaque {
                             if (atlas_ptr) |a| {
                                 a.dirty = true;
                             }
-                            layoutAndSyncScroll(&arena, &scroller, egl.width, egl.height, scale_factor);
+                            rebuildShowcaseAndSync(&showcase, &arena, &scroller, &router, egl.width, egl.height, scale_factor);
                         } else |_| {
                             egl.deinit();
                         }
@@ -1144,7 +1244,7 @@ fn workerMain(arg: ?*anyopaque) callconv(.c) ?*anyopaque {
                 const prev_h = egl.height;
                 egl.querySize();
                 if ((egl.width != prev_w or egl.height != prev_h) and egl.width > 0 and egl.height > 0) {
-                    layoutAndSyncScroll(&arena, &scroller, egl.width, egl.height, scale_factor);
+                    rebuildShowcaseAndSync(&showcase, &arena, &scroller, &router, egl.width, egl.height, scale_factor);
                     arena.requestRedraw();
                 } else {
                     arena.consumeRedraw();
@@ -1156,6 +1256,8 @@ fn workerMain(arg: ?*anyopaque) callconv(.c) ?*anyopaque {
                 const dt_ns: i64 = (@as(i64, t1.tv_sec) - @as(i64, t0.tv_sec)) * 1_000_000_000 +
                     (@as(i64, t1.tv_nsec) - @as(i64, t0.tv_nsec));
                 const dt_ms = @as(f64, @floatFromInt(dt_ns)) / 1_000_000.0;
+                showcase.last_frame_ms = @floatCast(dt_ms);
+                showcase.last_quad_count = quad_count;
 
                 if (frame_was_animating) {
                     anim_frames += 1;
