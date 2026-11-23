@@ -185,6 +185,293 @@ pub fn emitArcDots(
     return count;
 }
 
+pub const CurvedMetrics = struct {
+    scale: f32,
+    alpha: f32,
+    chord_width: f32,
+};
+
+/// Computes Wear OS circular pole scaling, alpha fade, and horizontal chord width for a vertical position.
+pub fn curvedScrollMetrics(card_cy: f32, vp_cy: f32, radius: f32) CurvedMetrics {
+    if (!std.math.isFinite(card_cy) or !std.math.isFinite(vp_cy) or !std.math.isFinite(radius) or radius <= 0.0) {
+        return .{ .scale = 1.0, .alpha = 1.0, .chord_width = 0.0 };
+    }
+    const dy_f64: f64 = @abs(@as(f64, card_cy) - @as(f64, vp_cy));
+    const r_f64: f64 = @as(f64, radius);
+    const norm_f64: f64 = std.math.clamp(dy_f64 / r_f64, 0.0, 1.0);
+    const chord_f64: f64 = 2.0 * r_f64 * @sqrt(@max(0.0, 1.0 - norm_f64 * norm_f64));
+    const max_f32: f64 = @as(f64, std.math.floatMax(f32));
+    const chord_width: f32 = @floatCast(std.math.clamp(chord_f64, 0.0, max_f32));
+    const norm: f32 = @floatCast(norm_f64);
+    const scale: f32 = 1.0 - 0.22 * (norm * norm);
+    const alpha: f32 = 1.0 - 0.55 * (norm * norm * norm);
+    return .{
+        .scale = scale,
+        .alpha = alpha,
+        .chord_width = chord_width,
+    };
+}
+
+fn applyCurvedQuadWithClipRadius(
+    q: *core.QuadInstance,
+    group_cy_px: f32,
+    vp_cx_px: f32,
+    clip_radius_px: f32,
+    m: CurvedMetrics,
+) void {
+    if (!std.math.isFinite(group_cy_px) or !std.math.isFinite(vp_cx_px)) return;
+    if (!std.math.isFinite(m.scale) or m.scale <= 0.0) return;
+
+    const x = q.pos_size[0];
+    const y = q.pos_size[1];
+    const w = q.pos_size[2];
+    const h = q.pos_size[3];
+    if (!std.math.isFinite(x) or !std.math.isFinite(y) or
+        !std.math.isFinite(w) or !std.math.isFinite(h))
+    {
+        return;
+    }
+    if (w <= 0.0 or h <= 0.0) return;
+
+    const s: f64 = @as(f64, m.scale);
+    const max_f32: f64 = @as(f64, std.math.floatMax(f32));
+    const new_x_f64 = @as(f64, vp_cx_px) + (@as(f64, x) - @as(f64, vp_cx_px)) * s;
+    const new_y_f64 = @as(f64, group_cy_px) + (@as(f64, y) - @as(f64, group_cy_px)) * s;
+    const new_w_f64 = @as(f64, w) * s;
+    const new_h_f64 = @as(f64, h) * s;
+    if (!std.math.isFinite(new_x_f64) or !std.math.isFinite(new_y_f64) or
+        !std.math.isFinite(new_w_f64) or !std.math.isFinite(new_h_f64))
+    {
+        return;
+    }
+
+    q.pos_size[0] = @floatCast(std.math.clamp(new_x_f64, -max_f32, max_f32));
+    q.pos_size[1] = @floatCast(std.math.clamp(new_y_f64, -max_f32, max_f32));
+    q.pos_size[2] = @floatCast(std.math.clamp(new_w_f64, 0.0, max_f32));
+    q.pos_size[3] = @floatCast(std.math.clamp(new_h_f64, 0.0, max_f32));
+
+    if (std.math.isFinite(q.params[3]) and q.params[3] <= 0.5) {
+        q.params[0] = @floatCast(std.math.clamp(@as(f64, sanitizeNonNeg(q.params[0])) * s, 0.0, max_f32));
+        q.params[1] = @floatCast(std.math.clamp(@as(f64, sanitizeNonNeg(q.params[1])) * s, 0.0, max_f32));
+        q.params[2] = @floatCast(std.math.clamp(@as(f64, sanitizeNonNeg(q.params[2])) * s, 0.0, max_f32));
+    }
+
+    const safe_alpha = sanitizeUnit(m.alpha);
+    q.color[3] = sanitizeUnit(q.color[3]) * safe_alpha;
+    q.border_color[3] = sanitizeUnit(q.border_color[3]) * safe_alpha;
+
+    if (std.math.isFinite(clip_radius_px) and clip_radius_px > 0.0 and
+        std.math.isFinite(q.clip_rect[0]) and std.math.isFinite(q.clip_rect[1]) and
+        std.math.isFinite(q.clip_rect[2]) and std.math.isFinite(q.clip_rect[3]))
+    {
+        const clip_w_f64: f64 = @as(f64, q.clip_rect[2]) - @as(f64, q.clip_rect[0]);
+        const clip_h_f64: f64 = @as(f64, q.clip_rect[3]) - @as(f64, q.clip_rect[1]);
+        const thresh_f64: f64 = @as(f64, clip_radius_px) * 1.95;
+        if (clip_w_f64 < thresh_f64 or clip_h_f64 < thresh_f64) {
+            const c0 = @as(f64, vp_cx_px) + (@as(f64, q.clip_rect[0]) - @as(f64, vp_cx_px)) * s;
+            const c1 = @as(f64, group_cy_px) + (@as(f64, q.clip_rect[1]) - @as(f64, group_cy_px)) * s;
+            const c2 = @as(f64, vp_cx_px) + (@as(f64, q.clip_rect[2]) - @as(f64, vp_cx_px)) * s;
+            const c3 = @as(f64, group_cy_px) + (@as(f64, q.clip_rect[3]) - @as(f64, group_cy_px)) * s;
+            if (std.math.isFinite(c0) and std.math.isFinite(c1) and
+                std.math.isFinite(c2) and std.math.isFinite(c3))
+            {
+                q.clip_rect[0] = @floatCast(std.math.clamp(c0, -max_f32, max_f32));
+                q.clip_rect[1] = @floatCast(std.math.clamp(c1, -max_f32, max_f32));
+                q.clip_rect[2] = @floatCast(std.math.clamp(c2, -max_f32, max_f32));
+                q.clip_rect[3] = @floatCast(std.math.clamp(c3, -max_f32, max_f32));
+            }
+        }
+    }
+}
+
+/// Rigidly scales and fades a single quad around `(vp_cx_px, group_cy_px)` using precomputed `CurvedMetrics`.
+pub fn applyCurvedQuadWithMetrics(
+    q: *core.QuadInstance,
+    group_cy_px: f32,
+    vp_cx_px: f32,
+    m: CurvedMetrics,
+) void {
+    applyCurvedQuadWithClipRadius(q, group_cy_px, vp_cx_px, vp_cx_px, m);
+}
+
+/// Rigidly scales and fades all non-background quads in a group around `(vp_cx_px, group_cy_px)`.
+pub fn applyCurvedGroupTransform(
+    quads: []core.QuadInstance,
+    group_cy_px: f32,
+    vp_cx_px: f32,
+    vp_cy_px: f32,
+    radius_px: f32,
+) void {
+    if (!std.math.isFinite(group_cy_px) or !std.math.isFinite(vp_cx_px) or
+        !std.math.isFinite(vp_cy_px) or !std.math.isFinite(radius_px) or radius_px <= 0.0)
+    {
+        return;
+    }
+    const m = curvedScrollMetrics(group_cy_px, vp_cy_px, radius_px);
+    const bg_thresh_f64: f64 = @as(f64, radius_px) * 1.95;
+    for (quads) |*q| {
+        const w = q.pos_size[2];
+        const h = q.pos_size[3];
+        if (!std.math.isFinite(w) or !std.math.isFinite(h) or w <= 0.0 or h <= 0.0) {
+            continue;
+        }
+        if (@as(f64, w) >= bg_thresh_f64 and @as(f64, h) >= bg_thresh_f64) {
+            continue;
+        }
+        applyCurvedQuadWithClipRadius(q, group_cy_px, vp_cx_px, radius_px, m);
+    }
+}
+
+/// Scales and fades emitted quads toward the viewport horizontal center as they scroll into circular poles.
+pub fn applyCurvedEdgeTransform(quads: []core.QuadInstance, vp_cx_px: f32, vp_cy_px: f32, radius_px: f32) void {
+    if (!std.math.isFinite(vp_cx_px) or !std.math.isFinite(vp_cy_px) or !std.math.isFinite(radius_px) or radius_px <= 0.0) {
+        return;
+    }
+    const bg_thresh_f64: f64 = @as(f64, radius_px) * 1.95;
+    const max_f32: f64 = @as(f64, std.math.floatMax(f32));
+    for (quads) |*q| {
+        const x = q.pos_size[0];
+        const y = q.pos_size[1];
+        const w = q.pos_size[2];
+        const h = q.pos_size[3];
+        if (!std.math.isFinite(x) or !std.math.isFinite(y) or !std.math.isFinite(w) or !std.math.isFinite(h)) {
+            continue;
+        }
+        if (w <= 0.0 or h <= 0.0) continue;
+        if (@as(f64, w) >= bg_thresh_f64 and @as(f64, h) >= bg_thresh_f64) {
+            continue;
+        }
+
+        const q_cy_f64: f64 = @as(f64, y) + @as(f64, h) * 0.5;
+        if (!std.math.isFinite(q_cy_f64) or @abs(q_cy_f64) > max_f32) continue;
+        const q_cy: f32 = @floatCast(q_cy_f64);
+
+        const m = curvedScrollMetrics(q_cy, vp_cy_px, radius_px);
+        applyCurvedQuadWithClipRadius(q, q_cy, vp_cx_px, radius_px, m);
+    }
+}
+
+/// Computes a centered rectangle at `angle_deg` clockwise from 12 o'clock along `orbit_radius`.
+pub fn radialPosition(cx: f32, cy: f32, orbit_radius: f32, angle_deg: f32, item_w: f32, item_h: f32) core.Rect {
+    if (!std.math.isFinite(cx) or !std.math.isFinite(cy) or
+        !std.math.isFinite(orbit_radius) or !std.math.isFinite(angle_deg) or
+        !std.math.isFinite(item_w) or !std.math.isFinite(item_h))
+    {
+        return .{};
+    }
+    const safe_r = sanitizeNonNeg(orbit_radius);
+    const safe_w = sanitizeNonNeg(item_w);
+    const safe_h = sanitizeNonNeg(item_h);
+    const rad: f64 = @as(f64, angle_deg) * (std.math.pi / 180.0);
+    const px = @as(f64, cx) + @as(f64, safe_r) * @sin(rad) - @as(f64, safe_w) * 0.5;
+    const py = @as(f64, cy) - @as(f64, safe_r) * @cos(rad) - @as(f64, safe_h) * 0.5;
+    if (!std.math.isFinite(px) or !std.math.isFinite(py)) return .{};
+    const max_f32: f64 = @as(f64, std.math.floatMax(f32));
+    if (@abs(px) > max_f32 or @abs(py) > max_f32) return .{};
+    return .{
+        .x = @floatCast(px),
+        .y = @floatCast(py),
+        .w = safe_w,
+        .h = safe_h,
+    };
+}
+
+/// CPU mirror of the GPU circular SDF clip coverage (`1.0 - smoothstep(-0.5, 0.5, d)`).
+pub fn roundClipAlpha(px: f32, py: f32, cx: f32, cy: f32, radius: f32) f32 {
+    if (!std.math.isFinite(px) or !std.math.isFinite(py) or
+        !std.math.isFinite(cx) or !std.math.isFinite(cy) or
+        !std.math.isFinite(radius) or radius <= 0.0)
+    {
+        return 0.0;
+    }
+    const dx: f64 = @as(f64, px) - @as(f64, cx);
+    const dy: f64 = @as(f64, py) - @as(f64, cy);
+    const d: f64 = std.math.hypot(dx, dy) - @as(f64, radius);
+    const t: f64 = std.math.clamp(d + 0.5, 0.0, 1.0);
+    const smooth: f64 = t * t * (3.0 - 2.0 * t);
+    return @floatCast(1.0 - smooth);
+}
+
+/// Emits a curved scroll-track arc (9 track dots + 3 highlighted thumb dots) along the right bezel (65..115 deg).
+pub fn emitCurvedScrollArc(
+    out_quads: []core.QuadInstance,
+    cx: f32,
+    cy: f32,
+    radius: f32,
+    progress: f32,
+    thickness: f32,
+    accent: core.Color,
+    clip_rect: [4]f32,
+) usize {
+    if (out_quads.len == 0) return 0;
+    if (!std.math.isFinite(cx) or !std.math.isFinite(cy) or
+        !std.math.isFinite(radius) or radius <= 0.0 or
+        !std.math.isFinite(thickness) or thickness <= 0.0)
+    {
+        return 0;
+    }
+    for (clip_rect) |v| {
+        if (!std.math.isFinite(v)) return 0;
+    }
+
+    const TRACK_COUNT: usize = 9;
+    const THUMB_COUNT: usize = 3;
+    const START_DEG: f32 = 65.0;
+    const END_DEG: f32 = 115.0;
+    const THUMB_STEP_DEG: f32 = 4.0;
+
+    const safe_prog = sanitizeUnit(progress);
+    const safe_accent = core.sanitizeColor(accent);
+    const track_col: core.Color = .{
+        core.Nord.polar_night_3[0],
+        core.Nord.polar_night_3[1],
+        core.Nord.polar_night_3[2],
+        0.70,
+    };
+
+    const track_d: f32 = @min(thickness, @max(1.0, thickness * 0.65));
+    const track_r: f32 = track_d * 0.5;
+    var written: usize = 0;
+
+    for (0..TRACK_COUNT) |i| {
+        if (written >= out_quads.len) return written;
+        const t: f32 = @as(f32, @floatFromInt(i)) / @as(f32, @floatFromInt(TRACK_COUNT - 1));
+        const angle_deg = START_DEG + t * (END_DEG - START_DEG);
+        const rect = radialPosition(cx, cy, radius, angle_deg, track_d, track_d);
+        if (rect.w <= 0.0 or rect.h <= 0.0) continue;
+        out_quads[written] = .{
+            .pos_size = .{ rect.x, rect.y, rect.w, rect.h },
+            .color = track_col,
+            .border_color = core.Nord.transparent,
+            .params = .{ track_r, 0.0, 0.0, AMBIENT_FG_SDF_MODE },
+            .clip_rect = clip_rect,
+        };
+        written += 1;
+    }
+
+    const thumb_center_deg = (START_DEG + THUMB_STEP_DEG) +
+        safe_prog * ((END_DEG - START_DEG) - 2.0 * THUMB_STEP_DEG);
+    const thumb_d: f32 = thickness;
+    const thumb_r: f32 = thumb_d * 0.5;
+    for (0..THUMB_COUNT) |i| {
+        if (written >= out_quads.len) return written;
+        const offset: f32 = @as(f32, @floatFromInt(i)) - 1.0;
+        const angle_deg = thumb_center_deg + offset * THUMB_STEP_DEG;
+        const rect = radialPosition(cx, cy, radius, angle_deg, thumb_d, thumb_d);
+        if (rect.w <= 0.0 or rect.h <= 0.0) continue;
+        out_quads[written] = .{
+            .pos_size = .{ rect.x, rect.y, rect.w, rect.h },
+            .color = safe_accent,
+            .border_color = core.Nord.transparent,
+            .params = .{ thumb_r, 0.0, 0.0, AMBIENT_FG_SDF_MODE },
+            .clip_rect = clip_rect,
+        };
+        written += 1;
+    }
+
+    return written;
+}
+
 pub const RotaryDelta = struct {
     scroll_dy: f32,
     detent_steps: i32,

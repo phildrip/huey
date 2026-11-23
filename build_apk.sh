@@ -31,6 +31,7 @@ echo "[0/5] Running unit tests (src/core_test.zig, src/glyph_atlas_test.zig, src
 "$ZIG" test "$ROOT_DIR/src/touch_ergonomics_test.zig"
 "$ZIG" test "$ROOT_DIR/src/color_pipeline_test.zig"
 "$ZIG" test "$ROOT_DIR/src/wearos_test.zig"
+"$ZIG" test "$ROOT_DIR/src/wear_circular_test.zig"
 "$ZIG" test "$ROOT_DIR/src/multi_window_test.zig"
 "$ZIG" test "$ROOT_DIR/src/wayland_test.zig"
 "$ZIG" test "$ROOT_DIR/src/workbench_test.zig"

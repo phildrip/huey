@@ -59,6 +59,7 @@ pub const WearShowcaseApp = struct {
     overlays: overlay.OverlayManager = overlay.OverlayManager.init(),
     anims: animation.AnimationPool = animation.AnimationPool.init(),
     scroll_container: ?core.NodeId = null,
+    scroll_progress: f32 = 0.0,
     last_frame_ms: f32 = 1.8,
     last_quad_count: usize = 0,
 
@@ -451,7 +452,6 @@ pub const WearShowcaseApp = struct {
         atlas: ?*glyph_atlas.GlyphAtlas,
         frame_idx: u64,
     ) usize {
-        _ = arena;
         _ = atlas;
         _ = frame_idx;
         const safe_start = @min(start_idx, out_quads.len);
@@ -470,31 +470,122 @@ pub const WearShowcaseApp = struct {
             return safe_start;
         }
 
+        const ring_dim = @min(vw, vh);
+        if (safe_start > 0 and ring_dim > 0.0) {
+            const vp_cx_px = vw * 0.5 * s;
+            const vp_cy_px = vh * 0.5 * s;
+            const radius_px = ring_dim * 0.5 * s;
+            const bg_thresh_f64: f64 = @as(f64, radius_px) * 1.95;
+
+            const CardGroup = struct {
+                y0: f32,
+                y1: f32,
+                cy: f32,
+                metrics: wearos.CurvedMetrics,
+            };
+            const card_ids = [_][]const u8{ "wear_tesla_card", "wear_theme_card", "wear_stats_card" };
+            var groups: [card_ids.len]CardGroup = undefined;
+            var group_count: usize = 0;
+
+            for (card_ids) |cid| {
+                if (arena.findByTestId(cid)) |nid| {
+                    if (arena.getRect(nid)) |r| {
+                        if (std.math.isFinite(r.y) and std.math.isFinite(r.h) and r.h > 0.0) {
+                            const y0 = r.y * s;
+                            const y1 = (r.y + r.h) * s;
+                            const cy = (y0 + y1) * 0.5;
+                            if (std.math.isFinite(y0) and std.math.isFinite(y1) and std.math.isFinite(cy)) {
+                                groups[group_count] = .{
+                                    .y0 = y0,
+                                    .y1 = y1,
+                                    .cy = cy,
+                                    .metrics = wearos.curvedScrollMetrics(cy, vp_cy_px, radius_px),
+                                };
+                                group_count += 1;
+                            }
+                        }
+                    }
+                }
+            }
+
+            const max_f32: f64 = @as(f64, std.math.floatMax(f32));
+            for (0..safe_start) |i| {
+                const x = out_quads[i].pos_size[0];
+                const y = out_quads[i].pos_size[1];
+                const w = out_quads[i].pos_size[2];
+                const h = out_quads[i].pos_size[3];
+                if (!std.math.isFinite(x) or !std.math.isFinite(y) or
+                    !std.math.isFinite(w) or !std.math.isFinite(h) or
+                    w <= 0.0 or h <= 0.0)
+                {
+                    continue;
+                }
+                if (@as(f64, w) >= bg_thresh_f64 and @as(f64, h) >= bg_thresh_f64) {
+                    continue;
+                }
+                const q_cy_f64: f64 = @as(f64, y) + @as(f64, h) * 0.5;
+                if (!std.math.isFinite(q_cy_f64) or @abs(q_cy_f64) > max_f32) continue;
+                const q_cy: f32 = @floatCast(q_cy_f64);
+
+                var best_idx: ?usize = null;
+                var best_dist: f32 = std.math.floatMax(f32);
+                for (groups[0..group_count], 0..) |g, gi| {
+                    if (q_cy >= g.y0 - 16.0 and q_cy <= g.y1 + 16.0) {
+                        const dist = @max(@as(f32, 0.0), @max(g.y0 - q_cy, q_cy - g.y1));
+                        if (best_idx == null or dist < best_dist) {
+                            best_dist = dist;
+                            best_idx = gi;
+                        }
+                    }
+                }
+
+                if (best_idx) |gi| {
+                    const g = groups[gi];
+                    wearos.applyCurvedQuadWithMetrics(&out_quads[i], g.cy, vp_cx_px, g.metrics);
+                } else {
+                    wearos.applyCurvedEdgeTransform(out_quads[i .. i + 1], vp_cx_px, vp_cy_px, radius_px);
+                }
+            }
+        }
+
         var count: usize = safe_start;
         if (self.overlays.activeCount() > 0 and count < out_quads.len) {
             count += self.overlays.emitOverlayQuadsScaled(vw, vh, s, out_quads[count..]);
         }
 
-        const ring_dim = @min(vw, vh);
         if (count < out_quads.len and ring_dim > 4.0) {
             const bezel_col = self.anims.animateColor(
                 animation.hashKey("theme", "accent"),
                 self.accent(),
                 animation.SpringConfig.gentle,
             );
-            const bezel_w = @max(1.0, self.anims.animateSpring(
-                animation.hashKey("wear", "bezel_w"),
-                2.0,
-                animation.SpringConfig.snappy,
-            ));
-            out_quads[count] = .{
-                .pos_size = .{ 2.0 * s, 2.0 * s, (vw - 4.0) * s, (vh - 4.0) * s },
-                .color = core.Nord.transparent,
-                .border_color = core.sanitizeColor(bezel_col),
-                .params = .{ (ring_dim * 0.5 - 2.0) * s, bezel_w * s, 0.0, 0.0 },
-                .clip_rect = .{ 0.0, 0.0, vw_px, vh_px },
-            };
-            count += 1;
+            if (ring_dim > 20.0) {
+                count += wearos.emitCurvedScrollArc(
+                    out_quads[count..],
+                    vw * 0.5 * s,
+                    vh * 0.5 * s,
+                    (ring_dim * 0.5 - 8.0) * s,
+                    self.scroll_progress,
+                    3.0 * s,
+                    bezel_col,
+                    .{ 0.0, 0.0, vw_px, vh_px },
+                );
+            }
+            if (count < out_quads.len) {
+                const bezel_w = @max(1.0, self.anims.animateSpring(
+                    animation.hashKey("wear", "bezel_w"),
+                    2.0,
+                    animation.SpringConfig.snappy,
+                ));
+                out_quads[count] = .{
+                    .pos_size = .{ 2.0 * s, 2.0 * s, (vw - 4.0) * s, (vh - 4.0) * s },
+                    .color = core.Nord.transparent,
+                    .border_color = core.sanitizeColor(bezel_col),
+                    .params = .{ (ring_dim * 0.5 - 2.0) * s, bezel_w * s, 0.0, 0.0 },
+                    .clip_rect = .{ 0.0, 0.0, vw_px, vh_px },
+                };
+                count += 1;
+            }
         }
 
         if (self.wear_ambient and count > 0) {

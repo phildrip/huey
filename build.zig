@@ -53,6 +53,7 @@ pub fn build(b: *std.Build) void {
         .{ .name = "touch_ergonomics_test", .path = "src/touch_ergonomics_test.zig" },
         .{ .name = "color_pipeline_test", .path = "src/color_pipeline_test.zig" },
         .{ .name = "wearos_test", .path = "src/wearos_test.zig" },
+        .{ .name = "wear_circular_test", .path = "src/wear_circular_test.zig" },
         .{ .name = "overlay_test", .path = "src/overlay_test.zig" },
         .{ .name = "multi_window_test", .path = "src/multi_window_test.zig" },
         .{ .name = "wayland_test", .path = "src/wayland_test.zig" },

@@ -1222,6 +1222,19 @@ fn workerMain(arg: ?*anyopaque) callconv(.c) ?*anyopaque {
             }
 
             frame_idx +%= 1;
+            if (IS_WEAR) {
+                showcase.scroll_progress = if (scroller.max_scroll > 0.0)
+                    std.math.clamp(@as(f32, @floatCast(scroller.offset / scroller.max_scroll)), 0.0, 1.0)
+                else
+                    0.0;
+                if (egl.width > 0 and egl.height > 0) {
+                    rend.setRoundClip(
+                        @as(f32, @floatFromInt(egl.width)) * 0.5,
+                        @as(f32, @floatFromInt(egl.height)) * 0.5,
+                        @as(f32, @floatFromInt(@min(egl.width, egl.height))) * 0.5,
+                    );
+                }
+            }
             const base_quads = arena.emitQuadsWithAtlas(quad_buf, scale_factor, atlas_ptr, frame_idx);
             const quad_count = showcase.emitPostQuads(&arena, quad_buf, base_quads, lw, lh, scale_factor, atlas_ptr, frame_idx);
             if (atlas_ptr) |a| {

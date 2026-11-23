@@ -49,6 +49,10 @@ const VsParams = extern struct {
     u_viewport: [2]f32,
 };
 
+const FsParams = extern struct {
+    u_round_clip: [4]f32,
+};
+
 const unit_quad_verts = [12]f32{
     0.0, 0.0,
     1.0, 0.0,
@@ -146,6 +150,7 @@ const fs_source: [*:0]const u8 =
     \\precision highp float;
     \\
     \\uniform sampler2D u_atlas;
+    \\uniform vec4 u_round_clip;
     \\
     \\in vec2 v_local_px;
     \\flat in vec2 v_half_size;
@@ -184,9 +189,17 @@ const fs_source: [*:0]const u8 =
     \\          v_frag_px.x <= v_clip_rect.z && v_frag_px.y <= v_clip_rect.w)) {
     \\        discard;
     \\    }
+    \\    float round_alpha = 1.0;
+    \\    if (u_round_clip.w > 0.5) {
+    \\        float d_round = length(v_frag_px - u_round_clip.xy) - u_round_clip.z;
+    \\        if (d_round > 0.5) {
+    \\            discard;
+    \\        }
+    \\        round_alpha = 1.0 - safeSmoothstep(-0.5, 0.5, d_round);
+    \\    }
     \\    if (v_params.w > 0.5) {
     \\        float cov = texture(u_atlas, v_uv).r;
-    \\        float out_a = v_color.a * cov;
+    \\        float out_a = v_color.a * cov * round_alpha;
     \\        if (out_a < 0.0001) {
     \\            discard;
     \\        }
@@ -202,7 +215,10 @@ const fs_source: [*:0]const u8 =
     \\
     \\    // Fast path for opaque solid interior pixels: 0 pow() calls!
     \\    if (d < -bw - 0.5 && v_color.a >= 0.9999) {
-    \\        frag_color = vec4(v_color.rgb, 1.0);
+    \\        if (round_alpha < 0.0001) {
+    \\            discard;
+    \\        }
+    \\        frag_color = vec4(v_color.rgb, round_alpha);
     \\        return;
     \\    }
     \\
@@ -218,18 +234,20 @@ const fs_source: [*:0]const u8 =
     \\    vec4 fg_pm = body_pm * body_cov;
     \\
     \\    float shadow_alpha = 0.0;
-    \\    if (blur > 0.5 && fg_pm.a < 0.9999) {
+    \\    float card_alpha = max(v_color.a, v_border_color.a);
+    \\    if (blur > 0.5 && fg_pm.a < 0.9999 && card_alpha > 0.0001) {
     \\        float d_shadow = sdRoundedBox(v_local_px - vec2(0.0, blur * 0.25), v_half_size, radius);
-    \\        shadow_alpha = (1.0 - safeSmoothstep(-blur * 0.35, blur * 1.15, d_shadow)) * 0.32;
+    \\        shadow_alpha = (1.0 - safeSmoothstep(-blur * 0.35, blur * 1.15, d_shadow)) * 0.32 * card_alpha;
     \\    }
     \\    const vec3 kShadowLin = vec3(0.002322, 0.003096, 0.004960);
     \\    vec4 shadow_pm = vec4(kShadowLin * shadow_alpha, shadow_alpha);
     \\
     \\    vec4 out_pm = fg_pm + shadow_pm * (1.0 - fg_pm.a);
-    \\    if (out_pm.a < 0.0001) {
+    \\    float final_a = out_pm.a * round_alpha;
+    \\    if (out_pm.a < 0.0001 || final_a < 0.0001) {
     \\        discard;
     \\    }
-    \\    frag_color = vec4(linearToSrgb(out_pm.rgb / out_pm.a), out_pm.a);
+    \\    frag_color = vec4(linearToSrgb(out_pm.rgb / out_pm.a), final_a);
     \\}
 ;
 
@@ -245,6 +263,19 @@ pub const Renderer = struct {
     pip: sg.sg_pipeline = .{ .id = 0 },
     atlas_w: u32 = DEFAULT_ATLAS_SIZE,
     atlas_h: u32 = DEFAULT_ATLAS_SIZE,
+    u_round_clip: [4]f32 = .{ 0.0, 0.0, 0.0, 0.0 },
+
+    pub fn setRoundClip(self: *Renderer, cx: f32, cy: f32, radius: f32) void {
+        if (!std.math.isFinite(cx) or !std.math.isFinite(cy) or !std.math.isFinite(radius) or radius <= 0.0) {
+            self.clearRoundClip();
+            return;
+        }
+        self.u_round_clip = .{ cx, cy, radius, 1.0 };
+    }
+
+    pub fn clearRoundClip(self: *Renderer) void {
+        self.u_round_clip = .{ 0.0, 0.0, 0.0, 0.0 };
+    }
 
     pub fn init(atlas_w: u32, atlas_h: u32) !Renderer {
         const eff_w: u32 = if (atlas_w > 0) atlas_w else DEFAULT_ATLAS_SIZE;
@@ -342,6 +373,14 @@ pub const Renderer = struct {
             .type = sg.SG_UNIFORMTYPE_FLOAT2,
             .array_count = 1,
             .glsl_name = "u_viewport",
+        };
+        shd_desc.uniform_blocks[1].stage = sg.SG_SHADERSTAGE_FRAGMENT;
+        shd_desc.uniform_blocks[1].size = @sizeOf(FsParams);
+        shd_desc.uniform_blocks[1].layout = sg.SG_UNIFORMLAYOUT_NATIVE;
+        shd_desc.uniform_blocks[1].glsl_uniforms[0] = .{
+            .type = sg.SG_UNIFORMTYPE_FLOAT4,
+            .array_count = 1,
+            .glsl_name = "u_round_clip",
         };
         shd_desc.views[0].texture = .{
             .stage = sg.SG_SHADERSTAGE_FRAGMENT,
@@ -544,14 +583,15 @@ pub const Renderer = struct {
             sg.sg_write_buffer_transient(&write_desc);
         }
 
+        const round_clip_active = self.u_round_clip[3] > 0.5;
         var pass = std.mem.zeroes(sg.sg_pass);
         pass.action.colors[0] = .{
             .load_action = sg.SG_LOADACTION_CLEAR,
             .store_action = sg.SG_STOREACTION_STORE,
             .clear_value = .{
-                .r = core.Nord.polar_night_0[0],
-                .g = core.Nord.polar_night_0[1],
-                .b = core.Nord.polar_night_0[2],
+                .r = if (round_clip_active) 0.0 else core.Nord.polar_night_0[0],
+                .g = if (round_clip_active) 0.0 else core.Nord.polar_night_0[1],
+                .b = if (round_clip_active) 0.0 else core.Nord.polar_night_0[2],
                 .a = 1.0,
             },
         };
@@ -582,6 +622,14 @@ pub const Renderer = struct {
             sg.sg_apply_uniforms(0, &sg.sg_range{
                 .ptr = &vs_params,
                 .size = @sizeOf(VsParams),
+            });
+
+            var fs_params = FsParams{
+                .u_round_clip = self.u_round_clip,
+            };
+            sg.sg_apply_uniforms(1, &sg.sg_range{
+                .ptr = &fs_params,
+                .size = @sizeOf(FsParams),
             });
 
             sg.sg_draw(0, 6, @intCast(quad_count));

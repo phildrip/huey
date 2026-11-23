@@ -250,8 +250,13 @@ test "WearShowcaseApp Nord accent swatches, bezel ring, and OLED ambient transfo
 
         var quads: [2048]core.QuadInstance = undefined;
         const base_count = arena.emitQuadsWithAtlas(&quads, scale, &atlas, @intCast(i + 1));
+        app.scroll_progress = 0.5;
         const total = app.emitPostQuads(&arena, &quads, base_count, w, h, scale, &atlas, @intCast(i + 1));
-        try std.testing.expectEqual(base_count + 1, total);
+        try std.testing.expect(total > base_count + 1);
+        // Curved scroll arc dots sit between base_count and bezel ring (total - 1)
+        const arc_dot = quads[base_count];
+        try std.testing.expect(arc_dot.pos_size[0] > w * 0.5 * scale);
+        try std.testing.expectApproxEqAbs(wearos.AMBIENT_FG_SDF_MODE, arc_dot.params[3], 1e-5);
 
         const bezel = quads[total - 1];
         try std.testing.expectApproxEqAbs(2.0 * scale, bezel.pos_size[0], 0.01);
@@ -381,7 +386,46 @@ test "WearShowcaseApp telemetry stats, counter stepper, slider, and edge-case sa
     try app.buildScene(&arena, w, h);
     arena.layout(w, h);
 
-    var quads: [16]core.QuadInstance = undefined;
+    var quads = std.mem.zeroes([16]core.QuadInstance);
     try std.testing.expectEqual(@as(usize, 16), app.emitPostQuads(&arena, &quads, 999, w, h, 2.0, null, 1));
     try std.testing.expectEqual(@as(usize, 0), app.emitPostQuads(&arena, &quads, 0, std.math.nan(f32), h, 2.0, null, 1));
+}
+
+test "WearShowcaseApp curved edge transform shrinks pole cards and scroll arc tracks progress" {
+    var app = wear_showcase.WearShowcaseApp.init();
+    var arena = core.LayoutArena.init(std.testing.allocator);
+    defer arena.deinit();
+
+    const w: f32 = 233.0;
+    const h: f32 = 233.0;
+    const scale: f32 = 2.0;
+    try app.buildScene(&arena, w, h);
+    arena.layout(w, h);
+
+    // Scroll so Card 1 moves upward into the top pole and Card 2 is near center
+    const sc = app.scroll_container.?;
+    arena.setScroll(sc, 0.0, 140.0);
+    arena.layout(w, h);
+
+    var quads_top: [2048]core.QuadInstance = undefined;
+    app.scroll_progress = 0.0;
+    const base_0 = arena.emitQuads(&quads_top, scale);
+    const total_0 = app.emitPostQuads(&arena, &quads_top, base_0, w, h, scale, null, 1);
+    try std.testing.expect(total_0 > base_0 + 4);
+
+    // Full-screen root quad (quads_top[0]) is preserved unscaled
+    try std.testing.expectApproxEqAbs(w * scale, quads_top[0].pos_size[2], 0.01);
+    // Card 1 quad (quads_top[1]) is near the top pole, so curved transform shrunk its width & alpha
+    const safe = wearos.WearConfig.init(w, h, true, 0.0).safeRect();
+    try std.testing.expect(quads_top[1].pos_size[2] < safe.w * scale * 0.95);
+    try std.testing.expect(quads_top[1].color[3] < 0.95);
+
+    // Scroll progress 1.0 shifts thumb dots lower (higher y) than progress 0.0
+    var quads_bot: [2048]core.QuadInstance = undefined;
+    app.scroll_progress = 1.0;
+    const base_1 = arena.emitQuads(&quads_bot, scale);
+    const total_1 = app.emitPostQuads(&arena, &quads_bot, base_1, w, h, scale, null, 2);
+    try std.testing.expectEqual(total_0, total_1);
+    // Last thumb dot is at total - 2 (right before the bezel ring at total - 1)
+    try std.testing.expect(quads_bot[total_1 - 2].pos_size[1] > quads_top[total_0 - 2].pos_size[1]);
 }
