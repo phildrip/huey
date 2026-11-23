@@ -47,12 +47,13 @@ NDK_LIBS="$NDK/toolchains/llvm/prebuilt/linux-x86_64/sysroot/usr/lib/aarch64-lin
 
 BUILD_DIR="$ROOT_DIR/build"
 APK_STAGING="$BUILD_DIR/apk"
-LIB_OUT="$APK_STAGING/lib/arm64-v8a/libziggui.so"
+LIB_OUT="$APK_STAGING/lib/arm64-v8a/libhuey.so"
 KEYSTORE="$BUILD_DIR/debug.keystore"
-UNALIGNED_APK="$BUILD_DIR/ziggui-unaligned.apk"
-ALIGNED_APK="$BUILD_DIR/ziggui-aligned.apk"
-FINAL_APK="$BUILD_DIR/ziggui-spike.apk"
+UNALIGNED_APK="$BUILD_DIR/huey-unaligned.apk"
+ALIGNED_APK="$BUILD_DIR/huey-aligned.apk"
+FINAL_APK="$BUILD_DIR/huey-showcase.apk"
 
+rm -f "$APK_STAGING/lib/arm64-v8a/libziggui.so"
 mkdir -p "$APK_STAGING/lib/arm64-v8a"
 
 cat > "$BUILD_DIR/android-libc.txt" <<EOF
@@ -64,7 +65,7 @@ kernel32_lib_dir=
 gcc_dir=
 EOF
 
-echo "[1/5] Compiling libziggui.so (aarch64-linux-android, ReleaseSmall)..."
+echo "[1/5] Compiling libhuey.so (aarch64-linux-android, ReleaseSmall)..."
 "$ZIG" build-lib \
   -target aarch64-linux-android.24 \
   -O ReleaseSmall \
@@ -76,7 +77,7 @@ echo "[1/5] Compiling libziggui.so (aarch64-linux-android, ReleaseSmall)..."
   -I"$SYSROOT_INC" \
   -L"$NDK_LIBS" \
   -lc -lm -landroid -llog -lEGL -lGLESv3 \
-  -fsoname=libziggui.so \
+  -fsoname=libhuey.so \
   -femit-bin="$LIB_OUT" \
   "$ROOT_DIR/src/android_main.zig" \
   "$ROOT_DIR/src/sokol_impl.c" \
@@ -92,7 +93,7 @@ rm -f "$UNALIGNED_APK" "$ALIGNED_APK" "$FINAL_APK"
 echo "[3/5] Packaging uncompressed native library into APK (extractNativeLibs=false)..."
 (
   cd "$APK_STAGING"
-  zip -0 -u -r "$UNALIGNED_APK" lib/arm64-v8a/libziggui.so
+  zip -0 -u -r "$UNALIGNED_APK" lib/arm64-v8a/libhuey.so
 )
 
 echo "[4/5] Aligning APK with zipalign (-p 4 for 4096-byte page alignment)..."

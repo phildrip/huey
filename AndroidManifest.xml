@@ -1,6 +1,6 @@
 <?xml version="1.0" encoding="utf-8"?>
 <manifest xmlns:android="http://schemas.android.com/apk/res/android"
-    package="com.ziggui.spike"
+    package="dev.huey.showcase"
     android:versionCode="1"
     android:versionName="1.0">
 
@@ -16,16 +16,16 @@
         android:allowBackup="false"
         android:extractNativeLibs="false"
         android:hasCode="false"
-        android:label="ZigGuiSpike">
+        android:label="Huey Showcase">
         <activity
             android:name="android.app.NativeActivity"
             android:configChanges="orientation|screenSize|screenLayout|smallestScreenSize|density|keyboardHidden|keyboard|navigation|uiMode"
             android:exported="true"
-            android:label="ZigGuiSpike"
+            android:label="Huey Showcase"
             android:theme="@android:style/Theme.NoTitleBar.Fullscreen">
             <meta-data
                 android:name="android.app.lib_name"
-                android:value="ziggui" />
+                android:value="huey" />
             <intent-filter>
                 <action android:name="android.intent.action.MAIN" />
                 <category android:name="android.intent.category.LAUNCHER" />

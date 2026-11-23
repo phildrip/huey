@@ -23,12 +23,13 @@ NDK_LIBS="$NDK/toolchains/llvm/prebuilt/linux-x86_64/sysroot/usr/lib/arm-linux-a
 
 BUILD_DIR="$ROOT_DIR/build"
 APK_STAGING="$BUILD_DIR/wear-apk"
-LIB_OUT="$APK_STAGING/lib/armeabi-v7a/libziggui.so"
+LIB_OUT="$APK_STAGING/lib/armeabi-v7a/libhuey.so"
 KEYSTORE="$BUILD_DIR/debug.keystore"
-UNALIGNED_APK="$BUILD_DIR/ziggui-wear-unaligned.apk"
-ALIGNED_APK="$BUILD_DIR/ziggui-wear-aligned.apk"
-FINAL_APK="$BUILD_DIR/ziggui-wear.apk"
+UNALIGNED_APK="$BUILD_DIR/huey-wear-unaligned.apk"
+ALIGNED_APK="$BUILD_DIR/huey-wear-aligned.apk"
+FINAL_APK="$BUILD_DIR/huey-wear.apk"
 
+rm -f "$APK_STAGING/lib/armeabi-v7a/libziggui.so"
 mkdir -p "$APK_STAGING/lib/armeabi-v7a"
 
 cat > "$BUILD_DIR/android-wear-libc.txt" <<EOF
@@ -40,7 +41,7 @@ kernel32_lib_dir=
 gcc_dir=
 EOF
 
-echo "[1/5] Compiling libziggui.so (arm-linux-androideabi.24, ReleaseSmall)..."
+echo "[1/5] Compiling libhuey.so (arm-linux-androideabi.24, ReleaseSmall)..."
 "$ZIG" build-lib \
   -target arm-linux-androideabi.24 \
   -O ReleaseSmall \
@@ -52,7 +53,7 @@ echo "[1/5] Compiling libziggui.so (arm-linux-androideabi.24, ReleaseSmall)..."
   -I"$SYSROOT_INC" \
   -L"$NDK_LIBS" \
   -lc -lm -landroid -llog -lEGL -lGLESv3 \
-  -fsoname=libziggui.so \
+  -fsoname=libhuey.so \
   -femit-bin="$LIB_OUT" \
   "$ROOT_DIR/src/wear_entry.zig" \
   "$ROOT_DIR/src/sokol_impl.c" \
@@ -68,7 +69,7 @@ rm -f "$UNALIGNED_APK" "$ALIGNED_APK" "$FINAL_APK"
 echo "[3/5] Packaging uncompressed native library into Wear OS APK (extractNativeLibs=false)..."
 (
   cd "$APK_STAGING"
-  zip -0 -u -r "$UNALIGNED_APK" lib/armeabi-v7a/libziggui.so
+  zip -0 -u -r "$UNALIGNED_APK" lib/armeabi-v7a/libhuey.so
 )
 
 echo "[4/5] Aligning Wear OS APK with zipalign (-p 4 for 4096-byte page alignment)..."

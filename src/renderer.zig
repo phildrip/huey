@@ -32,7 +32,7 @@ fn sokolLogger(
     const t: [*:0]const u8 = if (tag != null) tag else "sg";
     _ = __android_log_print(
         prio,
-        "ZigGuiSpike",
+        "Huey",
         "[%s] id=%u (%s:%u): %s",
         t,
         log_item_id,
@@ -299,7 +299,7 @@ pub const Renderer = struct {
         sg.sg_setup(&desc);
 
         if (!sg.sg_isvalid()) {
-            _ = __android_log_print(ANDROID_LOG_ERROR, "ZigGuiSpike", "sg_setup failed: sg_isvalid() is false");
+            _ = __android_log_print(ANDROID_LOG_ERROR, "Huey", "sg_setup failed: sg_isvalid() is false");
             return error.SokolSetupFailed;
         }
 
@@ -475,7 +475,7 @@ pub const Renderer = struct {
         if (!vbuf_ok or !ibuf_ok or !stg_ok or !img_ok or !view_ok or !smp_ok or !shd_ok or !pip_ok) {
             _ = __android_log_print(
                 ANDROID_LOG_ERROR,
-                "ZigGuiSpike",
+                "Huey",
                 "Renderer resource validation failed (vbuf=%d ibuf=%d stg=%d img=%d view=%d smp=%d shd=%d pip=%d)",
                 @as(c_int, @intFromBool(vbuf_ok)),
                 @as(c_int, @intFromBool(ibuf_ok)),

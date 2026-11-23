@@ -58,7 +58,7 @@ fn fnv1a64(bytes: []const u8) u64 {
 
 pub fn builtinIconKey(icon: BuiltinIcon, size_px: u16) IconKey {
     var buf: [48]u8 = undefined;
-    const prefix = "ziggui:builtin:";
+    const prefix = "huey:builtin:";
     const name = @tagName(icon);
     @memcpy(buf[0..prefix.len], prefix);
     @memcpy(buf[prefix.len .. prefix.len + name.len], name);

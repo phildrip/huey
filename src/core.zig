@@ -2181,7 +2181,7 @@ pub fn buildDemoScene(arena: *LayoutArena) !void {
         .kind = .card,
         .role = .panel,
         .test_id = "header.title",
-        .label = "ZIG GUI // UBERQUAD",
+        .label = "HUEY // UBERQUAD",
         .font_size = 18.0,
         .text_color = Nord.snow_storm_2,
         .height = 24.0,

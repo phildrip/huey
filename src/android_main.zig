@@ -29,7 +29,7 @@ const c = @cImport({
     @cInclude("android/log.h");
 });
 
-const LOG_TAG: [*:0]const u8 = if (IS_WEAR) "ZigGuiWatch" else "ZigGuiSpike";
+const LOG_TAG: [*:0]const u8 = "Huey";
 const LOOPER_ID_MAIN: c_int = 1;
 const LOOPER_ID_INPUT: c_int = 2;
 const MAX_INPUT_EVENTS_PER_FRAME: usize = 32;

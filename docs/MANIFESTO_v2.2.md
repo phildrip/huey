@@ -1,6 +1,6 @@
-# The GUI Manifesto (v2.2 — Zig-Native Edition)
+# The Huey GUI Manifesto (v2.2 — Zig-Native Edition)
 
-Every major GUI toolkit failed by either over-abstracting the hardware, drowning in state synchronization, or dragging a bloated document-object runtime into what should be an interactive rendering loop. Modern systems require a clean synthesis: a lean, hardware-accelerated, data-oriented Zig toolkit built for human ergonomics, autonomous agentic workflows, desktop window managers (`bloxwm`), mobile tablets, and Wear OS.
+Every major GUI toolkit failed by either over-abstracting the hardware, drowning in state synchronization, or dragging a bloated document-object runtime into what should be an interactive rendering loop. **Huey** is a clean synthesis: a lean, hardware-accelerated, data-oriented Zig toolkit built for human ergonomics, autonomous agentic workflows, desktop window managers (`huey-bloxwm`), mobile tablets (`huey-showcase.apk`), and Wear OS (`huey-wear.apk`).
 
 ---
 
@@ -40,13 +40,13 @@ Every major GUI toolkit failed by either over-abstracting the hardware, drowning
 - **Focus & Accessibility:** Trapped modal/launcher focus scopes, roving tabindex, `:focus-visible`, focus restoration, and an iterative OOM-atomic `A11yTree` coupled directly to `LayoutArena` + `FocusManager`.
 
 ### 2.5 No Custom Scripting DSL: Thin C ABI + Declarative Data Schema
-- **Thin Flat C ABI (`include/ziggui.h`):** ~21 plain `extern fn` calls with fixed-width `uint32_t` enums (`-fshort-enums` safe) and `ziggui_poll_event(&ev)` for Go, Rust, Python, Lua, and C consumers.
-- **Declarative JSON Schema (`src/declarative.zig`):** Two-pass atomic hot-reload of static widget trees and Oklab design tokens (`MmapTokenBuffer` with `pread` SIGBUS safety and CRC32 validation)—ideal for `bloxwm` bars, HUDs, and launchers with zero custom language maintenance.
+- **Thin Flat C ABI (`include/huey.h`):** ~21 plain `extern fn` calls with fixed-width `uint32_t` enums (`-fshort-enums` safe) and `huey_poll_event(&ev)` for Go, Rust, Python, Lua, and C consumers.
+- **Declarative JSON Schema (`src/declarative.zig`):** Two-pass atomic hot-reload of static widget trees and Oklab design tokens (`MmapTokenBuffer` with `pread` SIGBUS safety and CRC32 validation)—ideal for `huey-bloxwm` bars, HUDs, and launchers with zero custom language maintenance.
 
 ---
 
 ## 3. Agent-Native Ergonomics & Observability
-- **Flat Zig Struct-Literal API + Repo `SKILL.md`:** Zero macro DSLs, minimal hallucination surface.
+- **Flat Zig Umbrella & Struct-Literal API (`@import("huey")`) + Repo `SKILL.md`:** Zero macro DSLs, minimal hallucination surface.
 - **Pure-CPU Headless Runner (`HeadlessSession`):** `act → step(dt_ms) → inspect` across arbitrary DPI matrices, pure-Zig CPU UberQuad PNG snapshots (with optional `bbox` overlays), and automatic UI lints (`OVERFLOW`, `ZERO_SIZE`, `OCCLUDED_TARGET`, `SMALL_TOUCH_TARGET < 44dp`, Oklab `LOW_CONTRAST`).
 - **Local `AF_UNIX` NDJSON IPC (`IpcServer`):** 100% non-blocking, `0600` + `SO_PEERCRED`-authenticated semantic inspection & control without pixel-scraping.
 
@@ -54,7 +54,7 @@ Every major GUI toolkit failed by either over-abstracting the hardware, drowning
 
 ## 4. Non-Negotiable Operational Pillars
 1. **Permissive Licensing:** MIT / Apache-2.0 / zlib across the entire stack.
-2. **Sub-5 MB Stripped Binaries:** Currently `~235 KB` stripped `libziggui.so` on Android ARM64.
+2. **Sub-5 MB Stripped Binaries:** Currently `~235 KB` stripped `libhuey.so` on Android ARM64 (`huey-showcase.apk` / `huey-wear.apk`).
 3. **True DPI Agnosticism & Linear-Space Quality.**
 4. **Agent-First Operability & First-Class Accessibility.**
 5. **Instant Token & Layout Hot-Reloading.**

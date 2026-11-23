@@ -55,7 +55,7 @@ pub const LayerSurfaceDesc = struct {
     height: u32 = 0,
     exclusive_zone: i32 = 0,
     keyboard_interactivity: u32 = 0,
-    namespace: []const u8 = "ziggui",
+    namespace: []const u8 = "huey",
 };
 
 pub const LayerSurfaceHandle = struct {
@@ -65,8 +65,8 @@ pub const LayerSurfaceHandle = struct {
 };
 
 pub const XdgSurfaceDesc = struct {
-    title: []const u8 = "ziggui",
-    app_id: []const u8 = "dev.ziggui.app",
+    title: []const u8 = "huey",
+    app_id: []const u8 = "dev.huey.app",
 };
 
 pub const XdgSurfaceHandle = struct {

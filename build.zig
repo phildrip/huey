@@ -4,20 +4,25 @@ pub fn build(b: *std.Build) void {
     const target = b.standardTargetOptions(.{});
     const optimize = b.standardOptimizeOption(.{});
 
-    // Main desktop shell prototype executable: ziggui-bloxwm
+    // Public umbrella module: @import("huey")
+    _ = b.addModule("huey", .{
+        .root_source_file = b.path("src/huey.zig"),
+    });
+
+    // Main desktop shell prototype executable: huey-bloxwm
     const bloxwm_mod = b.createModule(.{
         .root_source_file = b.path("src/bloxwm_demo.zig"),
         .target = target,
         .optimize = optimize,
     });
     const bloxwm_exe = b.addExecutable(.{
-        .name = "ziggui-bloxwm",
+        .name = "huey-bloxwm",
         .root_module = bloxwm_mod,
     });
     const bloxwm_install = b.addInstallArtifact(bloxwm_exe, .{});
     b.getInstallStep().dependOn(&bloxwm_install.step);
 
-    const bloxwm_step = b.step("bloxwm-demo", "Build the ziggui-bloxwm desktop shell prototype");
+    const bloxwm_step = b.step("bloxwm-demo", "Build the huey-bloxwm desktop shell prototype");
     bloxwm_step.dependOn(&bloxwm_install.step);
 
     const run_cmd = b.addRunArtifact(bloxwm_exe);
@@ -25,11 +30,11 @@ pub fn build(b: *std.Build) void {
     if (b.args) |args| {
         run_cmd.addArgs(args);
     }
-    const run_step = b.step("run", "Run ziggui-bloxwm");
+    const run_step = b.step("run", "Run huey-bloxwm");
     run_step.dependOn(&run_cmd.step);
 
     // Unified test step covering all unit test suites in src/
-    const test_step = b.step("test", "Run all ZigGUI unit test suites");
+    const test_step = b.step("test", "Run all Huey unit test suites");
 
     const pure_test_suites = [_]struct {
         name: []const u8,

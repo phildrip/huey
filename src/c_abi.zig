@@ -2,18 +2,18 @@ const std = @import("std");
 const core = @import("core.zig");
 const events = @import("events.zig");
 
-pub const ZigguiContext = opaque {};
+pub const HueyContext = opaque {};
 
-pub const ZigguiRect = extern struct {
+pub const HueyRect = extern struct {
     x: f32,
     y: f32,
     w: f32,
     h: f32,
 };
 
-pub const ZigguiQuad = core.QuadInstance;
+pub const HueyQuad = core.QuadInstance;
 
-pub const ZigguiEventKind = enum(u32) {
+pub const HueyEventKind = enum(u32) {
     none = 0,
     clicked = 1,
     toggled = 2,
@@ -24,8 +24,8 @@ pub const ZigguiEventKind = enum(u32) {
     shortcut = 7,
 };
 
-pub const ZigguiEvent = extern struct {
-    kind: ZigguiEventKind,
+pub const HueyEvent = extern struct {
+    kind: HueyEventKind,
     node_id: u32,
     bool_val: bool,
     _pad0: [3]u8 = .{ 0, 0, 0 },
@@ -40,37 +40,37 @@ pub const ZigguiEvent = extern struct {
 };
 
 comptime {
-    if (@sizeOf(ZigguiRect) != 16) @compileError("ZigguiRect must be 16 bytes");
-    if (@alignOf(ZigguiRect) != 4) @compileError("ZigguiRect must be 4-byte aligned");
-    if (@offsetOf(ZigguiRect, "x") != 0) @compileError("ZigguiRect.x offset mismatch");
-    if (@offsetOf(ZigguiRect, "y") != 4) @compileError("ZigguiRect.y offset mismatch");
-    if (@offsetOf(ZigguiRect, "w") != 8) @compileError("ZigguiRect.w offset mismatch");
-    if (@offsetOf(ZigguiRect, "h") != 12) @compileError("ZigguiRect.h offset mismatch");
+    if (@sizeOf(HueyRect) != 16) @compileError("HueyRect must be 16 bytes");
+    if (@alignOf(HueyRect) != 4) @compileError("HueyRect must be 4-byte aligned");
+    if (@offsetOf(HueyRect, "x") != 0) @compileError("HueyRect.x offset mismatch");
+    if (@offsetOf(HueyRect, "y") != 4) @compileError("HueyRect.y offset mismatch");
+    if (@offsetOf(HueyRect, "w") != 8) @compileError("HueyRect.w offset mismatch");
+    if (@offsetOf(HueyRect, "h") != 12) @compileError("HueyRect.h offset mismatch");
 
-    if (@sizeOf(ZigguiQuad) != 96) @compileError("ZigguiQuad must be 96 bytes");
-    if (@alignOf(ZigguiQuad) != 4) @compileError("ZigguiQuad must be 4-byte aligned");
-    if (@offsetOf(ZigguiQuad, "pos_size") != 0) @compileError("ZigguiQuad.pos_size offset mismatch");
-    if (@offsetOf(ZigguiQuad, "uv_rect") != 16) @compileError("ZigguiQuad.uv_rect offset mismatch");
-    if (@offsetOf(ZigguiQuad, "color") != 32) @compileError("ZigguiQuad.color offset mismatch");
-    if (@offsetOf(ZigguiQuad, "border_color") != 48) @compileError("ZigguiQuad.border_color offset mismatch");
-    if (@offsetOf(ZigguiQuad, "params") != 64) @compileError("ZigguiQuad.params offset mismatch");
-    if (@offsetOf(ZigguiQuad, "clip_rect") != 80) @compileError("ZigguiQuad.clip_rect offset mismatch");
+    if (@sizeOf(HueyQuad) != 96) @compileError("HueyQuad must be 96 bytes");
+    if (@alignOf(HueyQuad) != 4) @compileError("HueyQuad must be 4-byte aligned");
+    if (@offsetOf(HueyQuad, "pos_size") != 0) @compileError("HueyQuad.pos_size offset mismatch");
+    if (@offsetOf(HueyQuad, "uv_rect") != 16) @compileError("HueyQuad.uv_rect offset mismatch");
+    if (@offsetOf(HueyQuad, "color") != 32) @compileError("HueyQuad.color offset mismatch");
+    if (@offsetOf(HueyQuad, "border_color") != 48) @compileError("HueyQuad.border_color offset mismatch");
+    if (@offsetOf(HueyQuad, "params") != 64) @compileError("HueyQuad.params offset mismatch");
+    if (@offsetOf(HueyQuad, "clip_rect") != 80) @compileError("HueyQuad.clip_rect offset mismatch");
 
-    if (@sizeOf(ZigguiEvent) != 104) @compileError("ZigguiEvent must be 104 bytes");
-    if (@alignOf(ZigguiEvent) != 4) @compileError("ZigguiEvent must be 4-byte aligned");
-    if (@sizeOf(ZigguiEventKind) != 4) @compileError("ZigguiEventKind must be 4 bytes");
-    if (@offsetOf(ZigguiEvent, "kind") != 0) @compileError("ZigguiEvent.kind offset mismatch");
-    if (@offsetOf(ZigguiEvent, "node_id") != 4) @compileError("ZigguiEvent.node_id offset mismatch");
-    if (@offsetOf(ZigguiEvent, "bool_val") != 8) @compileError("ZigguiEvent.bool_val offset mismatch");
-    if (@offsetOf(ZigguiEvent, "_pad0") != 9) @compileError("ZigguiEvent._pad0 offset mismatch");
-    if (@offsetOf(ZigguiEvent, "f32_val") != 12) @compileError("ZigguiEvent.f32_val offset mismatch");
-    if (@offsetOf(ZigguiEvent, "dx") != 16) @compileError("ZigguiEvent.dx offset mismatch");
-    if (@offsetOf(ZigguiEvent, "dy") != 20) @compileError("ZigguiEvent.dy offset mismatch");
-    if (@offsetOf(ZigguiEvent, "key") != 24) @compileError("ZigguiEvent.key offset mismatch");
-    if (@offsetOf(ZigguiEvent, "mods") != 28) @compileError("ZigguiEvent.mods offset mismatch");
-    if (@offsetOf(ZigguiEvent, "codepoint") != 32) @compileError("ZigguiEvent.codepoint offset mismatch");
-    if (@offsetOf(ZigguiEvent, "test_id") != 36) @compileError("ZigguiEvent.test_id offset mismatch");
-    if (@offsetOf(ZigguiEvent, "test_id_len") != 100) @compileError("ZigguiEvent.test_id_len offset mismatch");
+    if (@sizeOf(HueyEvent) != 104) @compileError("HueyEvent must be 104 bytes");
+    if (@alignOf(HueyEvent) != 4) @compileError("HueyEvent must be 4-byte aligned");
+    if (@sizeOf(HueyEventKind) != 4) @compileError("HueyEventKind must be 4 bytes");
+    if (@offsetOf(HueyEvent, "kind") != 0) @compileError("HueyEvent.kind offset mismatch");
+    if (@offsetOf(HueyEvent, "node_id") != 4) @compileError("HueyEvent.node_id offset mismatch");
+    if (@offsetOf(HueyEvent, "bool_val") != 8) @compileError("HueyEvent.bool_val offset mismatch");
+    if (@offsetOf(HueyEvent, "_pad0") != 9) @compileError("HueyEvent._pad0 offset mismatch");
+    if (@offsetOf(HueyEvent, "f32_val") != 12) @compileError("HueyEvent.f32_val offset mismatch");
+    if (@offsetOf(HueyEvent, "dx") != 16) @compileError("HueyEvent.dx offset mismatch");
+    if (@offsetOf(HueyEvent, "dy") != 20) @compileError("HueyEvent.dy offset mismatch");
+    if (@offsetOf(HueyEvent, "key") != 24) @compileError("HueyEvent.key offset mismatch");
+    if (@offsetOf(HueyEvent, "mods") != 28) @compileError("HueyEvent.mods offset mismatch");
+    if (@offsetOf(HueyEvent, "codepoint") != 32) @compileError("HueyEvent.codepoint offset mismatch");
+    if (@offsetOf(HueyEvent, "test_id") != 36) @compileError("HueyEvent.test_id offset mismatch");
+    if (@offsetOf(HueyEvent, "test_id_len") != 100) @compileError("HueyEvent.test_id_len offset mismatch");
 }
 
 const MAX_CSTR_LEN: usize = 1024;
@@ -83,7 +83,7 @@ const Impl = struct {
     viewport_h: f32,
     scale: f32,
 
-    fn fromCtx(ctx: ?*ZigguiContext) ?*Impl {
+    fn fromCtx(ctx: ?*HueyContext) ?*Impl {
         const ptr = ctx orelse return null;
         return @ptrCast(@alignCast(ptr));
     }
@@ -118,7 +118,7 @@ fn isPositiveFinite(v: f32) bool {
     return std.math.isFinite(v) and v > 0.0;
 }
 
-fn copyTestId(out: *ZigguiEvent, src: []const u8) void {
+fn copyTestId(out: *HueyEvent, src: []const u8) void {
     const max_len = @min(src.len, out.test_id.len - 1);
     var len: usize = 0;
     while (len < max_len) {
@@ -189,7 +189,7 @@ fn modsToU32(m: events.Modifiers) u32 {
     return out;
 }
 
-pub export fn ziggui_create(viewport_w: f32, viewport_h: f32, scale: f32) callconv(.c) ?*ZigguiContext {
+pub export fn huey_create(viewport_w: f32, viewport_h: f32, scale: f32) callconv(.c) ?*HueyContext {
     if (!isPositiveFinite(viewport_w) or !isPositiveFinite(viewport_h) or !isPositiveFinite(scale)) {
         return null;
     }
@@ -205,21 +205,21 @@ pub export fn ziggui_create(viewport_w: f32, viewport_h: f32, scale: f32) callco
     return @ptrCast(impl);
 }
 
-pub export fn ziggui_destroy(ctx: ?*ZigguiContext) callconv(.c) void {
+pub export fn huey_destroy(ctx: ?*HueyContext) callconv(.c) void {
     const impl = Impl.fromCtx(ctx) orelse return;
     impl.arena.deinit();
     impl.string_arena.deinit();
     std.heap.c_allocator.destroy(impl);
 }
 
-pub export fn ziggui_reset(ctx: ?*ZigguiContext) callconv(.c) void {
+pub export fn huey_reset(ctx: ?*HueyContext) callconv(.c) void {
     const impl = Impl.fromCtx(ctx) orelse return;
     impl.router = events.EventRouter.init();
     impl.arena.reset();
     _ = impl.string_arena.reset(.free_all);
 }
 
-pub export fn ziggui_set_viewport(ctx: ?*ZigguiContext, w: f32, h: f32, scale: f32) callconv(.c) void {
+pub export fn huey_set_viewport(ctx: ?*HueyContext, w: f32, h: f32, scale: f32) callconv(.c) void {
     const impl = Impl.fromCtx(ctx) orelse return;
     if (!isPositiveFinite(w) or !isPositiveFinite(h) or !isPositiveFinite(scale)) return;
     impl.viewport_w = w;
@@ -229,8 +229,8 @@ pub export fn ziggui_set_viewport(ctx: ?*ZigguiContext, w: f32, h: f32, scale: f
     impl.arena.requestRedraw();
 }
 
-pub export fn ziggui_add_vstack(
-    ctx: ?*ZigguiContext,
+pub export fn huey_add_vstack(
+    ctx: ?*HueyContext,
     parent_id: u32,
     test_id: ?[*:0]const u8,
     padding: f32,
@@ -249,8 +249,8 @@ pub export fn ziggui_add_vstack(
     });
 }
 
-pub export fn ziggui_add_hstack(
-    ctx: ?*ZigguiContext,
+pub export fn huey_add_hstack(
+    ctx: ?*HueyContext,
     parent_id: u32,
     test_id: ?[*:0]const u8,
     padding: f32,
@@ -269,8 +269,8 @@ pub export fn ziggui_add_hstack(
     });
 }
 
-pub export fn ziggui_add_card(
-    ctx: ?*ZigguiContext,
+pub export fn huey_add_card(
+    ctx: ?*HueyContext,
     parent_id: u32,
     test_id: ?[*:0]const u8,
     label: ?[*:0]const u8,
@@ -293,8 +293,8 @@ pub export fn ziggui_add_card(
     });
 }
 
-pub export fn ziggui_add_toggle(
-    ctx: ?*ZigguiContext,
+pub export fn huey_add_toggle(
+    ctx: ?*HueyContext,
     parent_id: u32,
     test_id: ?[*:0]const u8,
     label: ?[*:0]const u8,
@@ -320,8 +320,8 @@ pub export fn ziggui_add_toggle(
     });
 }
 
-pub export fn ziggui_add_slider(
-    ctx: ?*ZigguiContext,
+pub export fn huey_add_slider(
+    ctx: ?*HueyContext,
     parent_id: u32,
     test_id: ?[*:0]const u8,
     label: ?[*:0]const u8,
@@ -347,12 +347,12 @@ pub export fn ziggui_add_slider(
     });
 }
 
-pub export fn ziggui_layout(ctx: ?*ZigguiContext) callconv(.c) void {
+pub export fn huey_layout(ctx: ?*HueyContext) callconv(.c) void {
     const impl = Impl.fromCtx(ctx) orelse return;
     impl.arena.layout(impl.viewport_w, impl.viewport_h);
 }
 
-pub export fn ziggui_get_rect(ctx: ?*ZigguiContext, node_id: u32, out_rect: ?*ZigguiRect) callconv(.c) bool {
+pub export fn huey_get_rect(ctx: ?*HueyContext, node_id: u32, out_rect: ?*HueyRect) callconv(.c) bool {
     const impl = Impl.fromCtx(ctx) orelse return false;
     const dst = out_rect orelse return false;
     if (node_id == 0) return false;
@@ -367,8 +367,8 @@ pub export fn ziggui_get_rect(ctx: ?*ZigguiContext, node_id: u32, out_rect: ?*Zi
     return true;
 }
 
-pub export fn ziggui_pointer_down(
-    ctx: ?*ZigguiContext,
+pub export fn huey_pointer_down(
+    ctx: ?*HueyContext,
     pointer_id: i32,
     x: f32,
     y: f32,
@@ -384,8 +384,8 @@ pub export fn ziggui_pointer_down(
     } });
 }
 
-pub export fn ziggui_pointer_move(
-    ctx: ?*ZigguiContext,
+pub export fn huey_pointer_move(
+    ctx: ?*HueyContext,
     pointer_id: i32,
     x: f32,
     y: f32,
@@ -400,8 +400,8 @@ pub export fn ziggui_pointer_move(
     } });
 }
 
-pub export fn ziggui_pointer_up(
-    ctx: ?*ZigguiContext,
+pub export fn huey_pointer_up(
+    ctx: ?*HueyContext,
     pointer_id: i32,
     x: f32,
     y: f32,
@@ -417,14 +417,14 @@ pub export fn ziggui_pointer_up(
     } });
 }
 
-pub export fn ziggui_pointer_cancel(ctx: ?*ZigguiContext, pointer_id: i32) callconv(.c) void {
+pub export fn huey_pointer_cancel(ctx: ?*HueyContext, pointer_id: i32) callconv(.c) void {
     const impl = Impl.fromCtx(ctx) orelse return;
     impl.router.dispatch(&impl.arena, .{ .pointer_cancel = .{
         .pointer_id = pointer_id,
     } });
 }
 
-pub export fn ziggui_wheel(ctx: ?*ZigguiContext, x: f32, y: f32, dx: f32, dy: f32) callconv(.c) void {
+pub export fn huey_wheel(ctx: ?*HueyContext, x: f32, y: f32, dx: f32, dy: f32) callconv(.c) void {
     const impl = Impl.fromCtx(ctx) orelse return;
     impl.router.dispatch(&impl.arena, .{ .wheel = .{
         .x = x,
@@ -434,8 +434,8 @@ pub export fn ziggui_wheel(ctx: ?*ZigguiContext, x: f32, y: f32, dx: f32, dy: f3
     } });
 }
 
-pub export fn ziggui_key_down(
-    ctx: ?*ZigguiContext,
+pub export fn huey_key_down(
+    ctx: ?*HueyContext,
     key: u32,
     mods: u32,
     codepoint: u32,
@@ -455,7 +455,7 @@ pub export fn ziggui_key_down(
     } });
 }
 
-pub export fn ziggui_poll_event(ctx: ?*ZigguiContext, out_ev: ?*ZigguiEvent) callconv(.c) bool {
+pub export fn huey_poll_event(ctx: ?*HueyContext, out_ev: ?*HueyEvent) callconv(.c) bool {
     const impl = Impl.fromCtx(ctx) orelse return false;
     const dst = out_ev orelse return false;
     const ev = impl.router.nextEvent() orelse return false;
@@ -520,19 +520,19 @@ pub export fn ziggui_poll_event(ctx: ?*ZigguiContext, out_ev: ?*ZigguiEvent) cal
     return true;
 }
 
-pub export fn ziggui_needs_redraw(ctx: ?*ZigguiContext) callconv(.c) bool {
+pub export fn huey_needs_redraw(ctx: ?*HueyContext) callconv(.c) bool {
     const impl = Impl.fromCtx(ctx) orelse return false;
     return impl.arena.needsRedraw();
 }
 
-pub export fn ziggui_consume_redraw(ctx: ?*ZigguiContext) callconv(.c) void {
+pub export fn huey_consume_redraw(ctx: ?*HueyContext) callconv(.c) void {
     const impl = Impl.fromCtx(ctx) orelse return;
     impl.arena.consumeRedraw();
 }
 
-pub export fn ziggui_emit_quads(
-    ctx: ?*ZigguiContext,
-    out_buf: ?[*]ZigguiQuad,
+pub export fn huey_emit_quads(
+    ctx: ?*HueyContext,
+    out_buf: ?[*]HueyQuad,
     cap: usize,
 ) callconv(.c) usize {
     const impl = Impl.fromCtx(ctx) orelse return 0;
