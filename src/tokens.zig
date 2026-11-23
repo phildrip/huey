@@ -16,15 +16,12 @@ pub const OklabColor = extern struct {
         return core.oklabToSrgb(self.l, self.a, self.b, self.alpha);
     }
 
-    pub fn fromSrgbHex(comptime rgb: u24) OklabColor {
-        @setEvalBranchQuota(5000);
-        const r_srgb: f32 = @as(f32, @floatFromInt((rgb >> 16) & 0xFF)) / 255.0;
-        const g_srgb: f32 = @as(f32, @floatFromInt((rgb >> 8) & 0xFF)) / 255.0;
-        const b_srgb: f32 = @as(f32, @floatFromInt(rgb & 0xFF)) / 255.0;
-
-        const r = srgbToLinear(r_srgb);
-        const g = srgbToLinear(g_srgb);
-        const b = srgbToLinear(b_srgb);
+    /// Converts an sRGB `[4]f32` color (with `[0, 1]` channels) to perceptual Oklab.
+    pub fn fromSrgb(color: core.Color) OklabColor {
+        const safe = core.sanitizeColor(color);
+        const r = srgbToLinear(safe[0]);
+        const g = srgbToLinear(safe[1]);
+        const b = srgbToLinear(safe[2]);
 
         const l = 0.4122214708 * r + 0.5363325363 * g + 0.0514459929 * b;
         const m = 0.2119034982 * r + 0.6806995451 * g + 0.1073969566 * b;
@@ -38,8 +35,16 @@ pub const OklabColor = extern struct {
             .l = 0.2104542553 * l_ + 0.7936177850 * m_ - 0.0040720468 * s_,
             .a = 1.9779984951 * l_ - 2.4285922050 * m_ + 0.4505937099 * s_,
             .b = 0.0259040371 * l_ + 0.7827717662 * m_ - 0.8086757660 * s_,
-            .alpha = 1.0,
+            .alpha = safe[3],
         };
+    }
+
+    pub fn fromSrgbHex(comptime rgb: u24) OklabColor {
+        @setEvalBranchQuota(5000);
+        const r_srgb: f32 = @as(f32, @floatFromInt((rgb >> 16) & 0xFF)) / 255.0;
+        const g_srgb: f32 = @as(f32, @floatFromInt((rgb >> 8) & 0xFF)) / 255.0;
+        const b_srgb: f32 = @as(f32, @floatFromInt(rgb & 0xFF)) / 255.0;
+        return fromSrgb(.{ r_srgb, g_srgb, b_srgb, 1.0 });
     }
 
     fn srgbToLinear(c: f32) f32 {

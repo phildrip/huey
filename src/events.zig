@@ -117,6 +117,87 @@ pub const EventRouter = struct {
     non_focusable_focus: ?core.NodeId = null,
     focus: focus_mod.FocusManager = focus_mod.FocusManager.init(),
 
+    pub const SavedHandle = struct {
+        buf: [64]u8 = undefined,
+        len: usize = 0,
+
+        fn capture(arena: *const core.LayoutArena, maybe_id: ?core.NodeId) SavedHandle {
+            var out: SavedHandle = .{};
+            if (maybe_id) |id| {
+                if (arena.getTestId(id)) |tid| {
+                    if (tid.len > 0 and tid.len <= out.buf.len) {
+                        @memcpy(out.buf[0..tid.len], tid);
+                        out.len = tid.len;
+                    }
+                }
+            }
+            return out;
+        }
+
+        fn restore(self: *const SavedHandle, arena: *const core.LayoutArena) ?core.NodeId {
+            if (self.len == 0) return null;
+            return arena.findByTestId(self.buf[0..self.len]);
+        }
+    };
+
+    pub const SavedHandles = struct {
+        captured: SavedHandle = .{},
+        pressed: SavedHandle = .{},
+        hovered: SavedHandle = .{},
+        focused: SavedHandle = .{},
+        non_focusable_focus: SavedHandle = .{},
+        focus_visible: bool = false,
+    };
+
+    pub fn saveHandles(self: *const EventRouter, arena: *const core.LayoutArena) SavedHandles {
+        return .{
+            .captured = SavedHandle.capture(arena, self.captured_node),
+            .pressed = SavedHandle.capture(arena, self.pressed_node),
+            .hovered = SavedHandle.capture(arena, self.hovered_node),
+            .focused = SavedHandle.capture(arena, self.focus.focused()),
+            .non_focusable_focus = SavedHandle.capture(arena, self.non_focusable_focus),
+            .focus_visible = self.focus.isFocusVisible(),
+        };
+    }
+
+    pub fn restoreHandles(self: *EventRouter, arena: *core.LayoutArena, saved: *const SavedHandles) void {
+        if (saved.captured.len > 0) {
+            if (saved.captured.restore(arena)) |nid| {
+                self.captured_node = nid;
+            } else {
+                self.captured_node = null;
+                self.captured_pointer_id = null;
+            }
+        }
+        if (saved.pressed.len > 0) {
+            if (saved.pressed.restore(arena)) |nid| {
+                self.pressed_node = nid;
+            } else {
+                self.pressed_node = null;
+                self.pressed_pointer_id = null;
+                self.press_cancelled = false;
+            }
+        }
+        if (saved.hovered.len > 0) {
+            self.hovered_node = saved.hovered.restore(arena);
+        }
+        if (saved.focused.len > 0) {
+            if (saved.focused.restore(arena)) |nid| {
+                if (saved.focus_visible) {
+                    self.focus.setFocusedByKeyboard(arena, nid);
+                } else {
+                    self.focus.setFocusedByPointer(arena, nid);
+                }
+            } else {
+                self.focus.clearFocus();
+            }
+        }
+        if (saved.non_focusable_focus.len > 0) {
+            self.non_focusable_focus = saved.non_focusable_focus.restore(arena);
+        }
+        self.validateHandles(arena);
+    }
+
     pub fn init() EventRouter {
         return .{};
     }

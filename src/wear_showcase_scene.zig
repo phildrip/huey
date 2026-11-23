@@ -4,6 +4,7 @@ const events = @import("events.zig");
 const overlay = @import("overlay.zig");
 const wearos = @import("wearos.zig");
 const glyph_atlas = @import("glyph_atlas.zig");
+const animation = @import("animation.zig");
 
 pub const ACCENTS = [_][4]f32{
     core.Nord.frost_1, // #88C0D0 Nord Frost
@@ -56,6 +57,7 @@ pub const WearShowcaseApp = struct {
     slider_value: f32 = 0.68,
 
     overlays: overlay.OverlayManager = overlay.OverlayManager.init(),
+    anims: animation.AnimationPool = animation.AnimationPool.init(),
     scroll_container: ?core.NodeId = null,
     last_frame_ms: f32 = 1.8,
     last_quad_count: usize = 0,
@@ -67,6 +69,14 @@ pub const WearShowcaseApp = struct {
 
     pub fn init() WearShowcaseApp {
         return .{};
+    }
+
+    pub fn isAnimating(self: *const WearShowcaseApp) bool {
+        return self.anims.isAnimating();
+    }
+
+    pub fn stepAnimations(self: *WearShowcaseApp, dt_s: f32) bool {
+        return self.anims.step(dt_s);
     }
 
     pub fn accent(self: *const WearShowcaseApp) core.Color {
@@ -81,7 +91,11 @@ pub const WearShowcaseApp = struct {
         arena.reset();
         self.scroll_container = null;
 
-        const cur_accent = self.accent();
+        const cur_accent = self.anims.animateColor(
+            animation.hashKey("theme", "accent"),
+            self.accent(),
+            animation.SpringConfig.gentle,
+        );
         const safe = wearos.WearConfig.init(vw, vh, true, 0.0).safeRect();
         const body_pad = @max(12.0, safe.x);
 
@@ -117,7 +131,11 @@ pub const WearShowcaseApp = struct {
         self.scroll_container = body_id;
 
         // Card 1: Tesla Key Preview
-        const lock_col = if (self.locked) core.Nord.frost_1 else core.Nord.aurora_green;
+        const lock_col = self.anims.animateColor(
+            animation.hashKey("wear", "lock_color"),
+            if (self.locked) self.accent() else core.Nord.aurora_green,
+            animation.SpringConfig.snappy,
+        );
         const lock_label = if (self.locked) "LOCKED" else "UNLOCKED";
         const tesla_card = try arena.addChild(body_id, .{
             .kind = .card,
@@ -358,17 +376,29 @@ pub const WearShowcaseApp = struct {
         return self.overlays.handleOutsideClick(x, y);
     }
 
+    fn triggerBezelPulse(self: *WearShowcaseApp) void {
+        self.anims.restartSpring(
+            animation.hashKey("wear", "bezel_w"),
+            5.0,
+            2.0,
+            animation.SpringConfig.snappy,
+        );
+    }
+
     fn applyIdAction(self: *WearShowcaseApp, test_id: []const u8, toggled_val: ?bool) bool {
         if (std.mem.eql(u8, test_id, "wear_lock")) {
             self.locked = !self.locked;
+            self.triggerBezelPulse();
             return true;
         }
         if (std.mem.eql(u8, test_id, "wear_trunk")) {
             self.trunk_open = !self.trunk_open;
+            self.triggerBezelPulse();
             return true;
         }
         if (std.mem.eql(u8, test_id, "wear_flash")) {
             self.flash_count +|= 1;
+            self.triggerBezelPulse();
             return true;
         }
         if (parseIndexSuffix(test_id, "wear_accent_", ACCENTS.len)) |idx| {
@@ -377,6 +407,7 @@ pub const WearShowcaseApp = struct {
         }
         if (std.mem.eql(u8, test_id, "wear_ambient")) {
             self.wear_ambient = toggled_val orelse !self.wear_ambient;
+            self.anims.setReducedMotion(self.wear_ambient);
             return true;
         }
         if (std.mem.eql(u8, test_id, "wear_dec")) {
@@ -410,7 +441,7 @@ pub const WearShowcaseApp = struct {
     }
 
     pub fn emitPostQuads(
-        self: *const WearShowcaseApp,
+        self: *WearShowcaseApp,
         arena: *const core.LayoutArena,
         out_quads: []core.QuadInstance,
         start_idx: usize,
@@ -446,11 +477,21 @@ pub const WearShowcaseApp = struct {
 
         const ring_dim = @min(vw, vh);
         if (count < out_quads.len and ring_dim > 4.0) {
+            const bezel_col = self.anims.animateColor(
+                animation.hashKey("theme", "accent"),
+                self.accent(),
+                animation.SpringConfig.gentle,
+            );
+            const bezel_w = @max(1.0, self.anims.animateSpring(
+                animation.hashKey("wear", "bezel_w"),
+                2.0,
+                animation.SpringConfig.snappy,
+            ));
             out_quads[count] = .{
                 .pos_size = .{ 2.0 * s, 2.0 * s, (vw - 4.0) * s, (vh - 4.0) * s },
                 .color = core.Nord.transparent,
-                .border_color = core.sanitizeColor(self.accent()),
-                .params = .{ (ring_dim * 0.5 - 2.0) * s, 2.0 * s, 0.0, 0.0 },
+                .border_color = core.sanitizeColor(bezel_col),
+                .params = .{ (ring_dim * 0.5 - 2.0) * s, bezel_w * s, 0.0, 0.0 },
                 .clip_rect = .{ 0.0, 0.0, vw_px, vh_px },
             };
             count += 1;

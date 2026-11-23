@@ -4,6 +4,7 @@ const events = @import("events.zig");
 const overlay = @import("overlay.zig");
 const wearos = @import("wearos.zig");
 const glyph_atlas = @import("glyph_atlas.zig");
+const animation = @import("animation.zig");
 
 pub const Tab = enum(u8) {
     scroll,
@@ -187,6 +188,8 @@ pub const ShowcaseApp = struct {
     hud_targets: bool = false,
     hud_budget: bool = true,
     overlays: overlay.OverlayManager = overlay.OverlayManager.init(),
+    anims: animation.AnimationPool = animation.AnimationPool.init(),
+    last_tab_vw: f32 = 0.0,
     popup_title: []const u8 = "",
     scroll_container: ?core.NodeId = null,
     last_frame_ms: f32 = 1.8,
@@ -197,6 +200,14 @@ pub const ShowcaseApp = struct {
 
     pub fn init() ShowcaseApp {
         return .{};
+    }
+
+    pub fn isAnimating(self: *const ShowcaseApp) bool {
+        return self.anims.isAnimating();
+    }
+
+    pub fn stepAnimations(self: *ShowcaseApp, dt_s: f32) bool {
+        return self.anims.step(dt_s);
     }
 
     pub fn accent(self: *const ShowcaseApp) core.Color {
@@ -211,7 +222,11 @@ pub const ShowcaseApp = struct {
         arena.reset();
         self.scroll_container = null;
 
-        const cur_accent = self.accent();
+        const cur_accent = self.anims.animateColor(
+            animation.hashKey("theme", "accent"),
+            self.accent(),
+            animation.SpringConfig.gentle,
+        );
         const safe_ms = sanitizeFrameMs(self.last_frame_ms);
         const fps: u32 = if (safe_ms <= FRAME_BUDGET_MS)
             60
@@ -868,6 +883,7 @@ pub const ShowcaseApp = struct {
         if (self.overlays.handleOutsideClick(x, y)) {
             if (self.overlays.activeCount() == 0) {
                 self.popup_title = "";
+                self.anims.snapSpring(animation.hashKey("popup", "scale"), 1.0);
             }
             return true;
         }
@@ -888,6 +904,7 @@ pub const ShowcaseApp = struct {
                 _ = self.overlays.closeTop();
                 if (self.overlays.activeCount() == 0) {
                     self.popup_title = "";
+                    self.anims.snapSpring(animation.hashKey("popup", "scale"), 1.0);
                 }
             }
         }
@@ -900,6 +917,7 @@ pub const ShowcaseApp = struct {
         {
             self.overlays.closeAll();
             self.popup_title = "";
+            self.anims.snapSpring(animation.hashKey("popup", "scale"), 1.0);
             return;
         }
         const vw = logical_w;
@@ -918,6 +936,7 @@ pub const ShowcaseApp = struct {
         self.overlays.closeAll();
         self.popup_title = "";
 
+        var opened = false;
         if (std.mem.eql(u8, id, "pop_tl")) {
             _ = self.overlays.open(.{
                 .anchor = .{ .x = BODY_PAD, .y = top_y, .w = btn_w, .h = POP_BTN_H },
@@ -932,6 +951,7 @@ pub const ShowcaseApp = struct {
                 .shadow_blur = 12.0,
             }, vw, vh) catch return;
             self.popup_title = "Top-Left Anchor";
+            opened = true;
         } else if (std.mem.eql(u8, id, "pop_tr")) {
             _ = self.overlays.open(.{
                 .anchor = .{ .x = right_x, .y = top_y, .w = btn_w, .h = POP_BTN_H },
@@ -946,6 +966,7 @@ pub const ShowcaseApp = struct {
                 .shadow_blur = 12.0,
             }, vw, vh) catch return;
             self.popup_title = "Top-Right Flip";
+            opened = true;
         } else if (std.mem.eql(u8, id, "pop_bl")) {
             _ = self.overlays.open(.{
                 .anchor = .{ .x = BODY_PAD, .y = bot_y, .w = btn_w, .h = POP_BTN_H },
@@ -960,6 +981,7 @@ pub const ShowcaseApp = struct {
                 .shadow_blur = 12.0,
             }, vw, vh) catch return;
             self.popup_title = "Bot-Left Flip";
+            opened = true;
         } else if (std.mem.eql(u8, id, "pop_br")) {
             _ = self.overlays.open(.{
                 .anchor = .{ .x = right_x, .y = bot_y, .w = btn_w, .h = POP_BTN_H },
@@ -974,6 +996,7 @@ pub const ShowcaseApp = struct {
                 .shadow_blur = 12.0,
             }, vw, vh) catch return;
             self.popup_title = "Bot-Right Dual Flip";
+            opened = true;
         } else if (std.mem.eql(u8, id, "pop_modal")) {
             const modal_w = @min(280.0, @max(120.0, vw - 32.0));
             const modal_h = @min(180.0, @max(80.0, vh - 48.0));
@@ -996,32 +1019,59 @@ pub const ShowcaseApp = struct {
                 .shadow_blur = 16.0,
             }, vw, vh) catch return;
             self.popup_title = "Modal Dialog";
+            opened = true;
+        }
+
+        if (opened) {
+            self.anims.restartSpring(
+                animation.hashKey("popup", "scale"),
+                0.88,
+                1.0,
+                animation.SpringConfig.bouncy,
+            );
+        } else {
+            self.anims.snapSpring(animation.hashKey("popup", "scale"), 1.0);
+        }
+    }
+
+    fn approxTabIndicatorX(tab: Tab, vw: f32) f32 {
+        const tab_gap = @min(8.0, @max(2.0, (vw - 180.0) * 0.25));
+        const inner_w = @max(0.0, vw - 4.0 - 3.0 * tab_gap);
+        const each_w = inner_w * 0.25;
+        const ind_w = @min(@max(16.0, each_w * 0.56), each_w);
+        const idx: f32 = @floatFromInt(@intFromEnum(tab));
+        const tab_x = 2.0 + idx * (each_w + tab_gap);
+        return tab_x + (each_w - ind_w) * 0.5;
+    }
+
+    fn switchTab(self: *ShowcaseApp, next_tab: Tab, logical_w: f32) void {
+        const prev_tab = self.active_tab;
+        self.active_tab = next_tab;
+        self.overlays.closeAll();
+        self.popup_title = "";
+        self.anims.snapSpring(animation.hashKey("popup", "scale"), 1.0);
+        if (next_tab != prev_tab and std.math.isFinite(logical_w) and logical_w > 0.0) {
+            const key = animation.hashKey("tabs", "indicator_x");
+            _ = self.anims.animateSpring(key, approxTabIndicatorX(prev_tab, logical_w), animation.SpringConfig.snappy);
+            _ = self.anims.animateSpring(key, approxTabIndicatorX(next_tab, logical_w), animation.SpringConfig.snappy);
         }
     }
 
     fn applyIdAction(self: *ShowcaseApp, test_id: []const u8, toggled_val: ?bool, logical_w: f32, logical_h: f32) bool {
         if (std.mem.eql(u8, test_id, "tab_scroll")) {
-            self.active_tab = .scroll;
-            self.overlays.closeAll();
-            self.popup_title = "";
+            self.switchTab(.scroll, logical_w);
             return true;
         }
         if (std.mem.eql(u8, test_id, "tab_widgets")) {
-            self.active_tab = .widgets;
-            self.overlays.closeAll();
-            self.popup_title = "";
+            self.switchTab(.widgets, logical_w);
             return true;
         }
         if (std.mem.eql(u8, test_id, "tab_popups")) {
-            self.active_tab = .popups;
-            self.overlays.closeAll();
-            self.popup_title = "";
+            self.switchTab(.popups, logical_w);
             return true;
         }
         if (std.mem.eql(u8, test_id, "tab_hud")) {
-            self.active_tab = .hud;
-            self.overlays.closeAll();
-            self.popup_title = "";
+            self.switchTab(.hud, logical_w);
             return true;
         }
         if (parseIndexSuffix(test_id, "accent_", ACCENTS.len)) |idx| {
@@ -1086,6 +1136,7 @@ pub const ShowcaseApp = struct {
                     _ = self.overlays.closeTop();
                     if (self.overlays.activeCount() == 0) {
                         self.popup_title = "";
+                        self.anims.snapSpring(animation.hashKey("popup", "scale"), 1.0);
                     }
                     return true;
                 }
@@ -1206,7 +1257,7 @@ pub const ShowcaseApp = struct {
     }
 
     pub fn emitPostQuads(
-        self: *const ShowcaseApp,
+        self: *ShowcaseApp,
         arena: *const core.LayoutArena,
         out_quads: []core.QuadInstance,
         start_idx: usize,
@@ -1277,52 +1328,7 @@ pub const ShowcaseApp = struct {
         var count: usize = safe_start;
         const full_clip = [4]f32{ 0.0, 0.0, vw_px, vh_px };
 
-        // 1. Active overlays (escaping all parent scissors) + popup title text
-        if (self.overlays.activeCount() > 0 and count < out_quads.len) {
-            const ov_n = self.overlays.emitOverlayQuadsScaled(logical_w, logical_h, scale_factor, out_quads[count..]);
-            count += ov_n;
-            if (atlas) |a| {
-                if (self.overlays.top()) |top| {
-                    if (self.popup_title.len > 0 and count < out_quads.len and top.rect.w > 24.0 and top.rect.h >= 34.0) {
-                        const phys_pop = core.snapRectToPhysical(top.rect, scale_factor);
-                        const pop_clip = [4]f32{
-                            @max(full_clip[0], phys_pop.x),
-                            @max(full_clip[1], phys_pop.y),
-                            @min(full_clip[2], phys_pop.x + phys_pop.w),
-                            @min(full_clip[3], phys_pop.y + phys_pop.h),
-                        };
-                        if (!isClipEmpty(pop_clip)) {
-                            count += a.emitTextQuadsClipped(
-                                self.popup_title,
-                                top.rect.x + 14.0,
-                                top.rect.y + 10.0,
-                                16.0,
-                                scale_factor,
-                                core.Nord.snow_storm_2,
-                                pop_clip,
-                                out_quads[count..],
-                                frame_idx,
-                            );
-                            if (top.rect.h >= 64.0 and count < out_quads.len) {
-                                count += a.emitTextQuadsClipped(
-                                    "Tap outside to dismiss",
-                                    top.rect.x + 14.0,
-                                    top.rect.y + 38.0,
-                                    12.0,
-                                    scale_factor,
-                                    core.Nord.snow_storm_0,
-                                    pop_clip,
-                                    out_quads[count..],
-                                    frame_idx,
-                                );
-                            }
-                        }
-                    }
-                }
-            }
-        }
-
-        // Reserve 2 atomic slots for hud_budget so hud_bounds/hud_targets cannot starve it.
+        // Reserve 2 atomic slots for hud_budget so tab indicator / hud_bounds / hud_targets cannot starve it.
         const margin = @min(8.0, @min(logical_w, logical_h) * 0.1);
         const pill_w = @min(108.0, @max(0.0, logical_w - margin * 2.0));
         const pill_h: f32 = 8.0;
@@ -1330,6 +1336,116 @@ pub const ShowcaseApp = struct {
         const can_draw_budget = self.hud_budget and pill_w > 4.0 and logical_h >= pill_y + pill_h + margin;
         const budget_reserve: usize = if (can_draw_budget and out_quads.len >= count + 2) 2 else 0;
         const hud_limit = out_quads.len - budget_reserve;
+
+        // 0. Gliding active tab underline indicator pill (snappy spring across the 4 tabs)
+        const cur_accent = self.anims.animateColor(
+            animation.hashKey("theme", "accent"),
+            self.accent(),
+            animation.SpringConfig.gentle,
+        );
+        const active_tab_id = switch (self.active_tab) {
+            .scroll => "tab_scroll",
+            .widgets => "tab_widgets",
+            .popups => "tab_popups",
+            .hud => "tab_hud",
+        };
+        if (arena.findByTestId(active_tab_id)) |tab_nid| {
+            if (arena.getRect(tab_nid)) |tab_r| {
+                if (isPositiveFiniteRect(tab_r)) {
+                    const ind_w = @min(@max(16.0, tab_r.w * 0.56), tab_r.w);
+                    const target_tab_x = tab_r.x + (tab_r.w - ind_w) * 0.5;
+                    const tab_key = animation.hashKey("tabs", "indicator_x");
+                    if (self.last_tab_vw > 0.0 and @abs(logical_w - self.last_tab_vw) > 0.5) {
+                        self.anims.snapSpring(tab_key, target_tab_x);
+                    }
+                    self.last_tab_vw = logical_w;
+                    const ind_x = self.anims.animateSpring(
+                        tab_key,
+                        target_tab_x,
+                        animation.SpringConfig.snappy,
+                    );
+                    const ind_h: f32 = 3.0;
+                    const ind_y = tab_r.y + tab_r.h - 1.5;
+                    if (count < hud_limit and count < out_quads.len) {
+                        const ind_rect = core.Rect{ .x = ind_x, .y = ind_y, .w = ind_w, .h = ind_h };
+                        const phys_ind = core.snapRectToPhysical(ind_rect, scale_factor);
+                        if (rectsIntersectClip(phys_ind, full_clip)) {
+                            out_quads[count] = .{
+                                .pos_size = .{ phys_ind.x, phys_ind.y, phys_ind.w, phys_ind.h },
+                                .color = core.sanitizeColor(cur_accent),
+                                .border_color = withAlpha(core.Nord.snow_storm_2, 0.45),
+                                .params = .{ (ind_h * 0.5) * scale_factor, 0.5 * scale_factor, 6.0 * scale_factor, 0.0 },
+                                .clip_rect = full_clip,
+                            };
+                            count += 1;
+                        }
+                    }
+                }
+            }
+        }
+
+        // 1. Active overlays (escaping all parent scissors) + bouncy scale-in + popup title text
+        if (self.overlays.activeCount() > 0 and count < hud_limit) {
+            const ov_start = count;
+            const ov_n = self.overlays.emitOverlayQuadsScaled(logical_w, logical_h, scale_factor, out_quads[count..hud_limit]);
+            count += ov_n;
+            const pop_scale = @max(0.1, self.anims.animateSpring(
+                animation.hashKey("popup", "scale"),
+                1.0,
+                animation.SpringConfig.bouncy,
+            ));
+            if (ov_n > 0) {
+                const pq = &out_quads[ov_start + ov_n - 1];
+                pq.border_color = core.sanitizeColor(cur_accent);
+                if (@abs(pop_scale - 1.0) > 1.0e-4) {
+                    const cx = pq.pos_size[0] + pq.pos_size[2] * 0.5;
+                    const cy = pq.pos_size[1] + pq.pos_size[3] * 0.5;
+                    const nw = pq.pos_size[2] * pop_scale;
+                    const nh = pq.pos_size[3] * pop_scale;
+                    pq.pos_size = .{ cx - nw * 0.5, cy - nh * 0.5, nw, nh };
+                    pq.params[0] *= pop_scale;
+                }
+                if (atlas) |a| {
+                    if (self.overlays.top()) |top| {
+                        if (self.popup_title.len > 0 and count < hud_limit and top.rect.w > 24.0 and top.rect.h >= 34.0) {
+                            const phys_pop = core.snapRectToPhysical(top.rect, scale_factor);
+                            const pop_clip = [4]f32{
+                                @max(full_clip[0], phys_pop.x),
+                                @max(full_clip[1], phys_pop.y),
+                                @min(full_clip[2], phys_pop.x + phys_pop.w),
+                                @min(full_clip[3], phys_pop.y + phys_pop.h),
+                            };
+                            if (!isClipEmpty(pop_clip)) {
+                                count += a.emitTextQuadsClipped(
+                                    self.popup_title,
+                                    top.rect.x + 14.0,
+                                    top.rect.y + 10.0,
+                                    16.0,
+                                    scale_factor,
+                                    core.Nord.snow_storm_2,
+                                    pop_clip,
+                                    out_quads[count..hud_limit],
+                                    frame_idx,
+                                );
+                                if (top.rect.h >= 64.0 and count < hud_limit) {
+                                    count += a.emitTextQuadsClipped(
+                                        "Tap outside to dismiss",
+                                        top.rect.x + 14.0,
+                                        top.rect.y + 38.0,
+                                        12.0,
+                                        scale_factor,
+                                        core.Nord.snow_storm_0,
+                                        pop_clip,
+                                        out_quads[count..hud_limit],
+                                        frame_idx,
+                                    );
+                                }
+                            }
+                        }
+                    }
+                }
+            }
+        }
 
         // 2 & 3. HUD Layout Bounds & 44dp Hit Targets
         if ((self.hud_bounds or self.hud_targets) and count < hud_limit) {

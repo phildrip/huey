@@ -130,38 +130,73 @@ test "WearShowcaseApp Tesla Key interactions: lock, trunk, flash" {
     try std.testing.expectEqualStrings("MODEL Y", arena.nodes.items(.label)[hdr_0.index]);
     try std.testing.expectEqualStrings("LOCKED", arena.nodes.items(.sublabel)[hdr_0.index]);
 
-    // Tap wear_lock -> UNLOCKED + Aurora Green
+    // Tap wear_lock -> UNLOCKED + Oklab morph to Aurora Green + Bezel pulse (5.0 -> 2.0)
+    try std.testing.expect(!app.isAnimating());
     try std.testing.expect(try tapNode(&app, &arena, &router, "wear_lock", w, h));
     try std.testing.expect(!app.locked);
+    try std.testing.expect(app.isAnimating());
     const lock_id_1 = arena.findByTestId("wear_lock").?;
     try std.testing.expectEqualStrings("UNLOCKED", arena.nodes.items(.label)[lock_id_1.index]);
-    try std.testing.expectApproxEqAbs(core.Nord.aurora_green[0], arena.nodes.items(.fill)[lock_id_1.index][0], 1e-5);
     const hdr_1 = arena.findByTestId("wear_tesla_header").?;
     try std.testing.expectEqualStrings("UNLOCKED", arena.nodes.items(.sublabel)[hdr_1.index]);
 
-    // Tap wear_lock again -> LOCKED
+    // Frame 0 bezel width starts pulsed at 5.0dp
+    var pulse_quads: [2048]core.QuadInstance = undefined;
+    const base_p0 = arena.emitQuads(&pulse_quads, 1.0);
+    const total_p0 = app.emitPostQuads(&arena, &pulse_quads, base_p0, w, h, 1.0, null, 1);
+    try std.testing.expectApproxEqAbs(@as(f32, 5.0), pulse_quads[total_p0 - 1].params[1], 0.1);
+
+    // Mid-flight step: color morphs in Oklab and bezel_w shrinks toward 2.0
+    _ = app.stepAnimations(1.0 / 60.0);
+    try app.buildScene(&arena, w, h);
+    arena.layout(w, h);
+    const lock_mid = arena.nodes.items(.fill)[arena.findByTestId("wear_lock").?.index];
+    try std.testing.expect(lock_mid[0] != core.Nord.aurora_green[0] or lock_mid[1] != core.Nord.aurora_green[1]);
+
+    var steps: usize = 0;
+    while (app.isAnimating() and steps < 240) : (steps += 1) {
+        _ = app.stepAnimations(1.0 / 60.0);
+    }
+    try std.testing.expect(!app.isAnimating());
+    try app.buildScene(&arena, w, h);
+    arena.layout(w, h);
+    const lock_settled = arena.findByTestId("wear_lock").?;
+    try std.testing.expectApproxEqAbs(core.Nord.aurora_green[0], arena.nodes.items(.fill)[lock_settled.index][0], 1e-4);
+    const base_p1 = arena.emitQuads(&pulse_quads, 1.0);
+    const total_p1 = app.emitPostQuads(&arena, &pulse_quads, base_p1, w, h, 1.0, null, 2);
+    try std.testing.expectApproxEqAbs(@as(f32, 2.0), pulse_quads[total_p1 - 1].params[1], 0.01);
+
+    // Tap wear_lock again -> LOCKED + bezel pulse
     try std.testing.expect(try tapNode(&app, &arena, &router, "wear_lock", w, h));
     try std.testing.expect(app.locked);
+    try std.testing.expect(app.isAnimating());
+    while (app.isAnimating()) _ = app.stepAnimations(1.0 / 60.0);
 
-    // Tap wear_trunk -> OPEN -> TRUNK
+    // Tap wear_trunk -> OPEN -> TRUNK (each triggers bezel pulse)
     const trunk_0 = arena.findByTestId("wear_trunk").?;
     try std.testing.expectEqualStrings("TRUNK", arena.nodes.items(.label)[trunk_0.index]);
     try std.testing.expect(try tapNode(&app, &arena, &router, "wear_trunk", w, h));
     try std.testing.expect(app.trunk_open);
+    try std.testing.expect(app.isAnimating());
     try std.testing.expectEqualStrings("OPEN", arena.nodes.items(.label)[arena.findByTestId("wear_trunk").?.index]);
+    while (app.isAnimating()) _ = app.stepAnimations(1.0 / 60.0);
     try std.testing.expect(try tapNode(&app, &arena, &router, "wear_trunk", w, h));
     try std.testing.expect(!app.trunk_open);
     try std.testing.expectEqualStrings("TRUNK", arena.nodes.items(.label)[arena.findByTestId("wear_trunk").?.index]);
+    while (app.isAnimating()) _ = app.stepAnimations(1.0 / 60.0);
 
-    // Tap wear_flash -> FLASH 1 -> FLASH 2
+    // Tap wear_flash -> FLASH 1 -> FLASH 2 (triggers bezel pulse)
     const flash_0 = arena.findByTestId("wear_flash").?;
     try std.testing.expectEqualStrings("FLASH", arena.nodes.items(.label)[flash_0.index]);
     try std.testing.expect(try tapNode(&app, &arena, &router, "wear_flash", w, h));
     try std.testing.expectEqual(@as(u32, 1), app.flash_count);
+    try std.testing.expect(app.isAnimating());
     try std.testing.expectEqualStrings("FLASH 1", arena.nodes.items(.label)[arena.findByTestId("wear_flash").?.index]);
+    while (app.isAnimating()) _ = app.stepAnimations(1.0 / 60.0);
     try std.testing.expect(try tapNode(&app, &arena, &router, "wear_flash", w, h));
     try std.testing.expectEqual(@as(u32, 2), app.flash_count);
     try std.testing.expectEqualStrings("FLASH 2", arena.nodes.items(.label)[arena.findByTestId("wear_flash").?.index]);
+    while (app.isAnimating()) _ = app.stepAnimations(1.0 / 60.0);
 }
 
 test "WearShowcaseApp Nord accent swatches, bezel ring, and OLED ambient transform" {
@@ -193,6 +228,22 @@ test "WearShowcaseApp Nord accent swatches, bezel ring, and OLED ambient transfo
         try std.testing.expect(try tapNode(&app, &arena, &router, aid, w, h));
         try std.testing.expectEqual(@as(u8, @intCast(i)), app.accent_idx);
 
+        if (i > 0) {
+            try std.testing.expect(app.isAnimating());
+            var steps: usize = 0;
+            while (app.isAnimating() and steps < 240) : (steps += 1) {
+                _ = app.stepAnimations(1.0 / 60.0);
+                // Finding #2: rebuilding scene every VSync frame while locked must converge cleanly without re-waking lock_color
+                try app.buildScene(&arena, w, h);
+            }
+            try std.testing.expect(!app.isAnimating());
+            try app.buildScene(&arena, w, h);
+            try std.testing.expect(!app.isAnimating());
+            const lock_idx = arena.findByTestId("wear_lock").?.index;
+            try std.testing.expectApproxEqAbs(wear_showcase.ACCENTS[i][0], arena.nodes.items(.fill)[lock_idx][0], 1e-4);
+            try std.testing.expectApproxEqAbs(wear_showcase.ACCENTS[i][1], arena.nodes.items(.fill)[lock_idx][1], 1e-4);
+        }
+
         // Keep Card 2 scrolled in view after rebuild
         arena.setScroll(app.scroll_container.?, 0.0, 140.0);
         arena.layout(w, h);
@@ -215,9 +266,15 @@ test "WearShowcaseApp Nord accent swatches, bezel ring, and OLED ambient transfo
         try std.testing.expectApproxEqAbs(wear_showcase.ACCENTS[i][2], bezel.border_color[2], 1e-4);
     }
 
-    // Toggle wear_ambient ON and verify full-frame ambient OLED transform
+    // Toggle wear_ambient ON and verify full-frame ambient OLED transform + reduced motion (no 60Hz animations)
     try std.testing.expect(try tapNode(&app, &arena, &router, "wear_ambient", w, h));
     try std.testing.expect(app.wear_ambient);
+    try std.testing.expect(!app.isAnimating());
+    // Tapping lock while in OLED ambient mode must not wake 60Hz animations
+    try std.testing.expect(app.handleUiEvent(.{ .clicked = .{ .id = .{ .index = 0, .gen = 1 }, .test_id = "wear_lock" } }, w, h));
+    try app.buildScene(&arena, w, h);
+    arena.layout(w, h);
+    try std.testing.expect(!app.isAnimating());
 
     var quads: [2048]core.QuadInstance = undefined;
     const base_count = arena.emitQuadsWithAtlas(&quads, scale, &atlas, 10);

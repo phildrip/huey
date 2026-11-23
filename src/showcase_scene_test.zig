@@ -155,15 +155,32 @@ test "ShowcaseApp widgets tab: theme accents, counter, live slider drag, and Wea
     try app.buildScene(&arena, w, h);
     arena.layout(w, h);
 
-    // Theme switching through all 4 Nord accents
+    // Theme switching through all 4 Nord accents (Oklab color morph)
     for (0..showcase.ACCENTS.len) |i| {
         var abuf: [16]u8 = undefined;
         const aid = try std.fmt.bufPrint(&abuf, "accent_{d}", .{i});
         try std.testing.expect(try tapNode(&app, &arena, &router, aid, w, h));
         try std.testing.expectEqual(@as(u8, @intCast(i)), app.accent_idx);
+        if (i > 0) {
+            try std.testing.expect(app.isAnimating());
+            _ = app.stepAnimations(1.0 / 60.0);
+            try app.buildScene(&arena, w, h);
+            arena.layout(w, h);
+            const mid_border = arena.nodes.items(.border)[arena.findByTestId("tab_widgets").?.index];
+            try std.testing.expect(mid_border[0] != showcase.ACCENTS[i][0] or mid_border[1] != showcase.ACCENTS[i][1]);
+            var steps: usize = 0;
+            while (app.isAnimating() and steps < 240) : (steps += 1) {
+                _ = app.stepAnimations(1.0 / 60.0);
+            }
+            try std.testing.expect(!app.isAnimating());
+            try app.buildScene(&arena, w, h);
+            arena.layout(w, h);
+        }
         const tab_id = arena.findByTestId("tab_widgets").?;
         const idx = tab_id.index;
-        try std.testing.expectEqual(showcase.ACCENTS[i][0], arena.nodes.items(.border)[idx][0]);
+        try std.testing.expectApproxEqAbs(showcase.ACCENTS[i][0], arena.nodes.items(.border)[idx][0], 1e-4);
+        try std.testing.expectApproxEqAbs(showcase.ACCENTS[i][1], arena.nodes.items(.border)[idx][1], 1e-4);
+        try std.testing.expectApproxEqAbs(showcase.ACCENTS[i][2], arena.nodes.items(.border)[idx][2], 1e-4);
     }
 
     // Counter inc & dec
@@ -436,13 +453,181 @@ test "ShowcaseApp hud tab toggles and emitPostQuads bounds, targets, and budget 
     try std.testing.expectApproxEqAbs(core.Nord.aurora_red[0], bar_over.color[0], 0.01);
     try std.testing.expectApproxEqAbs(core.Nord.aurora_red[1], bar_over.color[1], 0.01);
 
-    // Disable all HUD flags -> 0 post quads when no overlays open
+    // Disable all HUD flags -> only the gliding active tab underline quad is emitted when no overlays open
     try std.testing.expect(try tapNode(&app, &arena, &router, "hud_bounds", w, h));
     try std.testing.expect(try tapNode(&app, &arena, &router, "hud_targets", w, h));
     try std.testing.expect(try tapNode(&app, &arena, &router, "hud_budget", w, h));
     const base_clean = arena.emitQuads(&quads, 1.0);
     const total_clean = app.emitPostQuads(&arena, &quads, base_clean, w, h, 1.0, null, 3);
-    try std.testing.expectEqual(base_clean, total_clean);
+    try std.testing.expectEqual(base_clean + 1, total_clean);
+}
+
+test "ShowcaseApp gliding active tab underline and bouncy popup scale-in animations" {
+    var app = showcase.ShowcaseApp.init();
+    var arena = core.LayoutArena.init(std.testing.allocator);
+    defer arena.deinit();
+    var router = events.EventRouter.init();
+
+    const w: f32 = 412.0;
+    const h: f32 = 892.0;
+    app.hud_budget = false;
+    try app.buildScene(&arena, w, h);
+    arena.layout(w, h);
+
+    var quads: [2048]core.QuadInstance = undefined;
+    const base0 = arena.emitQuads(&quads, 1.0);
+    const total0 = app.emitPostQuads(&arena, &quads, base0, w, h, 1.0, null, 1);
+    try std.testing.expectEqual(base0 + 1, total0);
+    try std.testing.expect(!app.isAnimating());
+    const ind_scroll_x = quads[total0 - 1].pos_size[0];
+
+    // Switch to HUD tab -> indicator_x starts at tab_scroll and glides to tab_hud
+    try std.testing.expect(try tapNode(&app, &arena, &router, "tab_hud", w, h));
+    const base1 = arena.emitQuads(&quads, 1.0);
+    const total1 = app.emitPostQuads(&arena, &quads, base1, w, h, 1.0, null, 2);
+    try std.testing.expectEqual(base1 + 1, total1);
+    try std.testing.expect(app.isAnimating());
+    try std.testing.expectApproxEqAbs(ind_scroll_x, quads[total1 - 1].pos_size[0], 1.5);
+
+    _ = app.stepAnimations(1.0 / 60.0);
+    const total_mid = app.emitPostQuads(&arena, &quads, base1, w, h, 1.0, null, 3);
+    const ind_mid_x = quads[total_mid - 1].pos_size[0];
+    try std.testing.expect(ind_mid_x > ind_scroll_x + 5.0);
+
+    var steps: usize = 0;
+    while (app.isAnimating() and steps < 240) : (steps += 1) {
+        _ = app.stepAnimations(1.0 / 60.0);
+    }
+    try std.testing.expect(!app.isAnimating());
+    const total_settled = app.emitPostQuads(&arena, &quads, base1, w, h, 1.0, null, 4);
+    const hud_r = arena.getRect(arena.findByTestId("tab_hud").?).?;
+    const ind_settled = quads[total_settled - 1];
+    try std.testing.expect(ind_settled.pos_size[0] >= hud_r.x);
+    try std.testing.expect(ind_settled.pos_size[0] + ind_settled.pos_size[2] <= hud_r.x + hud_r.w + 0.5);
+
+    // Switch to Popups tab and settle tab indicator
+    try std.testing.expect(try tapNode(&app, &arena, &router, "tab_popups", w, h));
+    _ = app.emitPostQuads(&arena, &quads, arena.emitQuads(&quads, 1.0), w, h, 1.0, null, 5);
+    steps = 0;
+    while (app.isAnimating() and steps < 240) : (steps += 1) {
+        _ = app.stepAnimations(1.0 / 60.0);
+    }
+    try std.testing.expect(!app.isAnimating());
+
+    // Open modal popup -> bouncy scale-in from 0.88 -> 1.0 around center
+    try std.testing.expect(try tapNode(&app, &arena, &router, "pop_modal", w, h));
+    try std.testing.expect(app.isAnimating());
+    const modal_rect = app.overlays.top().?.rect;
+    const base_pop = arena.emitQuads(&quads, 1.0);
+    const total_pop0 = app.emitPostQuads(&arena, &quads, base_pop, w, h, 1.0, null, 6);
+    // Quads emitted after base_pop: [tab_indicator, modal_backdrop, modal_surface]
+    try std.testing.expectEqual(base_pop + 3, total_pop0);
+    const pop_q0 = quads[total_pop0 - 1];
+    try std.testing.expectApproxEqAbs(modal_rect.w * 0.88, pop_q0.pos_size[2], 1.5);
+    try std.testing.expectApproxEqAbs(modal_rect.h * 0.88, pop_q0.pos_size[3], 1.5);
+    try std.testing.expectApproxEqAbs(
+        modal_rect.x + modal_rect.w * 0.5,
+        pop_q0.pos_size[0] + pop_q0.pos_size[2] * 0.5,
+        1.0,
+    );
+
+    // Dismissing popup mid-flight snaps popup_scale so app drops to 0% idle CPU
+    try std.testing.expect(app.handlePointerDown(2.0, 2.0));
+    try std.testing.expect(!app.isAnimating());
+}
+
+test "ShowcaseApp adversarial regressions: immediate tab wake, resize snap, live popup border morph, tight orphan text, and EventRouter handle rebind" {
+    const font_bytes = try loadHostFont(std.testing.allocator);
+    defer std.testing.allocator.free(font_bytes);
+    var atlas = try glyph_atlas.GlyphAtlas.init(std.testing.allocator, font_bytes, 512, 512);
+    defer atlas.deinit();
+
+    var app = showcase.ShowcaseApp.init();
+    var arena = core.LayoutArena.init(std.testing.allocator);
+    defer arena.deinit();
+    var router = events.EventRouter.init();
+
+    const w: f32 = 412.0;
+    const h: f32 = 892.0;
+    try app.buildScene(&arena, w, h);
+    arena.layout(w, h);
+    var quads: [2048]core.QuadInstance = undefined;
+    _ = app.emitPostQuads(&arena, &quads, arena.emitQuads(&quads, 1.0), w, h, 1.0, &atlas, 1);
+    try std.testing.expect(!app.isAnimating());
+
+    // 1. Finding #6a: Switching tab immediately wakes app.isAnimating() BEFORE emitPostQuads
+    try std.testing.expect(app.handleUiEvent(.{ .clicked = .{ .id = .{ .index = 0, .gen = 1 }, .test_id = "tab_popups" } }, w, h));
+    try std.testing.expect(app.isAnimating());
+    try app.buildScene(&arena, w, h);
+    arena.layout(w, h);
+    while (app.isAnimating()) _ = app.stepAnimations(1.0 / 60.0);
+    _ = app.emitPostQuads(&arena, &quads, arena.emitQuads(&quads, 1.0), w, h, 1.0, &atlas, 2);
+    while (app.isAnimating()) _ = app.stepAnimations(1.0 / 60.0);
+
+    // 2. Finding #6b: Viewport resize snaps tab indicator without triggering spring animation
+    const w_wide: f32 = 640.0;
+    try app.buildScene(&arena, w_wide, h);
+    arena.layout(w_wide, h);
+    _ = app.emitPostQuads(&arena, &quads, arena.emitQuads(&quads, 1.0), w_wide, h, 1.0, &atlas, 3);
+    try std.testing.expect(!app.isAnimating());
+
+    // 3. Finding #3: Popup border_color morphs live to final target accent even if opened mid-morph
+    app.accent_idx = 2; // aurora_purple
+    try app.buildScene(&arena, w_wide, h); // starts theme/accent morph from frost_1 -> aurora_purple
+    arena.layout(w_wide, h);
+    try std.testing.expect(app.isAnimating());
+    try std.testing.expect(try tapNode(&app, &arena, &router, "pop_modal", w_wide, h));
+    while (app.isAnimating()) {
+        _ = app.stepAnimations(1.0 / 60.0);
+        try app.buildScene(&arena, w_wide, h);
+        arena.layout(w_wide, h);
+    }
+    const base_m = arena.emitQuads(&quads, 1.0);
+    const total_m = app.emitPostQuads(&arena, &quads, base_m, w_wide, h, 1.0, &atlas, 4);
+    var found_modal_surface = false;
+    for (quads[base_m..total_m]) |q| {
+        if (q.params[3] == 0.0 and q.pos_size[2] > 200.0 and q.pos_size[3] > 100.0 and q.pos_size[2] < w_wide - 1.0) {
+            found_modal_surface = true;
+            try std.testing.expectApproxEqAbs(showcase.ACCENTS[2][0], q.border_color[0], 1e-4);
+            try std.testing.expectApproxEqAbs(showcase.ACCENTS[2][1], q.border_color[1], 1e-4);
+            try std.testing.expectApproxEqAbs(showcase.ACCENTS[2][2], q.border_color[2], 1e-4);
+        }
+    }
+    try std.testing.expect(found_modal_surface);
+
+    // 4. Finding #4: Tight buffer where modal needs 2 slots and only 1 slot remains before hud_limit -> NO orphan glyph quads!
+    var tight_quads: [64]core.QuadInstance = undefined;
+    app.hud_budget = true;
+    // start_idx = 60, len = 64 -> budget reserves 2 (62..64), tab_indicator takes 60, leaving 1 slot (61..62) -> ov_n == 0!
+    const tight_total = app.emitPostQuads(&arena, &tight_quads, 60, w_wide, h, 1.0, &atlas, 5);
+    try std.testing.expectEqual(@as(usize, 63), tight_total); // 60 + 1 tab indicator + 2 budget = 63, NO orphan text at slot 61!
+    for (tight_quads[60..tight_total]) |q| {
+        try std.testing.expectEqual(@as(f32, 0.0), q.params[3]);
+    }
+    try std.testing.expect(app.handlePointerDown(2.0, 2.0));
+
+    // 5. Finding #1: EventRouter handles survive mid-tap scene rebuild during animation
+    try std.testing.expect(try tapNode(&app, &arena, &router, "tab_widgets", w_wide, h));
+    const inc_r = arena.getRect(arena.findByTestId("btn_inc").?).?;
+    const cx = inc_r.x + inc_r.w * 0.5;
+    const cy = inc_r.y + inc_r.h * 0.5;
+    router.dispatch(&arena, .{ .pointer_down = .{ .pointer_id = 9, .x = cx, .y = cy, .is_touch = true } });
+    try std.testing.expect(router.pressed_node != null);
+
+    // Simulate VSync animation frame rebuild while finger is held down
+    const saved = router.saveHandles(&arena);
+    try app.buildScene(&arena, w_wide, h);
+    arena.layout(w_wide, h);
+    router.restoreHandles(&arena, &saved);
+    try std.testing.expect(router.pressed_node != null);
+
+    router.dispatch(&arena, .{ .pointer_up = .{ .pointer_id = 9, .x = cx, .y = cy, .is_touch = true } });
+    var saw_inc_click = false;
+    while (router.nextEvent()) |ev| {
+        if (app.handleUiEvent(ev, w_wide, h)) saw_inc_click = true;
+    }
+    try std.testing.expect(saw_inc_click);
+    try std.testing.expectEqual(@as(i32, 43), app.counter);
 }
 
 test "ShowcaseApp narrow Wear OS 200x200 and landscape 640x360 layouts + NaN sanitization" {

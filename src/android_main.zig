@@ -428,16 +428,7 @@ fn rebuildShowcaseAndSync(
     egl_h: c.EGLint,
     scale_factor: f32,
 ) void {
-    var cap_buf: [64]u8 = undefined;
-    var cap_len: usize = 0;
-    if (router.captured_node) |cid| {
-        if (arena.getTestId(cid)) |tid| {
-            if (tid.len > 0 and tid.len <= cap_buf.len) {
-                @memcpy(cap_buf[0..tid.len], tid);
-                cap_len = tid.len;
-            }
-        }
-    }
+    const saved = router.saveHandles(arena);
     const lw: f32 = if (egl_w > 0) @as(f32, @floatFromInt(egl_w)) / scale_factor else DEFAULT_LW;
     const lh: f32 = if (egl_h > 0) @as(f32, @floatFromInt(egl_h)) / scale_factor else DEFAULT_LH;
     showcase.buildScene(arena, lw, lh) catch |err| {
@@ -449,11 +440,7 @@ fn rebuildShowcaseAndSync(
     } else {
         arena.layout(lw, lh);
     }
-    if (cap_len > 0) {
-        if (arena.findByTestId(cap_buf[0..cap_len])) |new_id| {
-            router.captured_node = new_id;
-        }
-    }
+    router.restoreHandles(arena, &saved);
 }
 
 fn isTouchInScrollArea(
@@ -579,7 +566,7 @@ fn workerMain(arg: ?*anyopaque) callconv(.c) ?*anyopaque {
     var quit = false;
     while (!quit) {
         const has_surface = (window != null and egl.surface != c.EGL_NO_SURFACE and rend.initialized);
-        const wants_frame = has_surface and (scroller.isAnimating() or arena.needsRedraw());
+        const wants_frame = has_surface and (scroller.isAnimating() or showcase.isAnimating() or arena.needsRedraw());
         if (wants_frame) {
             if (choreographer) |ch| {
                 if (!vsync.posted) {
@@ -803,7 +790,7 @@ fn workerMain(arg: ?*anyopaque) callconv(.c) ?*anyopaque {
                                             scroller.animating = false;
                                             scroller.dragging = false;
                                             scroller.velocity = 0.0;
-                                            last_anim_time_s = null;
+                                            if (!showcase.isAnimating()) last_anim_time_s = null;
                                             anim_frames = 0;
                                             anim_dt_sum_ms = 0.0;
                                             anim_render_sum_ms = 0.0;
@@ -1076,7 +1063,7 @@ fn workerMain(arg: ?*anyopaque) callconv(.c) ?*anyopaque {
                                             .dy = wheel_dy,
                                         } });
                                         touch_scroll.reset();
-                                        last_anim_time_s = null;
+                                        if (!showcase.isAnimating()) last_anim_time_s = null;
                                         anim_frames = 0;
                                         anim_dt_sum_ms = 0.0;
                                         anim_render_sum_ms = 0.0;
@@ -1174,14 +1161,21 @@ fn workerMain(arg: ?*anyopaque) callconv(.c) ?*anyopaque {
             anim_dt_sum_ms = 0.0;
             anim_render_sum_ms = 0.0;
         } else if (choreographer == null) {
-            if (scroller.isAnimating()) {
+            if (scroller.isAnimating() or showcase.isAnimating()) {
                 const now_s = monotonicSeconds();
                 frame_dt_s = if (last_anim_time_s) |prev_t| (now_s - prev_t) else (1.0 / 60.0);
                 last_anim_time_s = now_s;
-                frame_was_animating = true;
-                _ = scroller.step(frame_dt_s);
-                applyScroll(&arena, &scroller, showcase.scroll_container, egl.width, egl.height, scale_factor);
-                arena.requestRedraw();
+                if (scroller.isAnimating()) {
+                    frame_was_animating = true;
+                    _ = scroller.step(frame_dt_s);
+                    applyScroll(&arena, &scroller, showcase.scroll_container, egl.width, egl.height, scale_factor);
+                    arena.requestRedraw();
+                }
+                if (showcase.isAnimating()) {
+                    _ = showcase.stepAnimations(@floatCast(frame_dt_s));
+                    rebuildShowcaseAndSync(&showcase, &arena, &scroller, &router, egl.width, egl.height, scale_factor);
+                    arena.requestRedraw();
+                }
             } else {
                 last_anim_time_s = null;
             }
@@ -1201,6 +1195,11 @@ fn workerMain(arg: ?*anyopaque) callconv(.c) ?*anyopaque {
                     if (showcase.scroll_container orelse arena.getRoot()) |target| {
                         arena.setScroll(target, 0.0, @floatCast(scroller.offset));
                     }
+                    arena.requestRedraw();
+                }
+                if (showcase.isAnimating()) {
+                    _ = showcase.stepAnimations(@floatCast(frame_dt_s));
+                    rebuildShowcaseAndSync(&showcase, &arena, &scroller, &router, egl.width, egl.height, scale_factor);
                     arena.requestRedraw();
                 }
                 if (arena.needsRedraw()) {
@@ -1309,7 +1308,7 @@ fn workerMain(arg: ?*anyopaque) callconv(.c) ?*anyopaque {
             }
         }
 
-        if (choreographer != null and !scroller.isAnimating() and !arena.needsRedraw()) {
+        if (choreographer != null and !scroller.isAnimating() and !showcase.isAnimating() and !arena.needsRedraw()) {
             vsync.active = false;
         }
     }

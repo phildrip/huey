@@ -56,6 +56,7 @@ pub fn build(b: *std.Build) void {
         .{ .name = "overlay_test", .path = "src/overlay_test.zig" },
         .{ .name = "multi_window_test", .path = "src/multi_window_test.zig" },
         .{ .name = "wayland_test", .path = "src/wayland_test.zig" },
+        .{ .name = "animation_test", .path = "src/animation_test.zig" },
         .{ .name = "workbench_test", .path = "src/workbench_test.zig" },
         .{ .name = "bloxwm_demo_test", .path = "src/bloxwm_demo_test.zig" },
     };
