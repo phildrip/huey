@@ -238,8 +238,8 @@ pub const A11yTree = struct {
     generation: u64 = 0,
 
     ann_bufs: [MAX_ANNOUNCEMENTS][MAX_ANNOUNCEMENT_LEN]u8 = undefined,
-    ann_lens: [MAX_ANNOUNCEMENTS]u8 = [_]u8{0} ** MAX_ANNOUNCEMENTS,
-    ann_politeness: [MAX_ANNOUNCEMENTS]LivePoliteness = [_]LivePoliteness{.off} ** MAX_ANNOUNCEMENTS,
+    ann_lens: [MAX_ANNOUNCEMENTS]u8 = @splat(0),
+    ann_politeness: [MAX_ANNOUNCEMENTS]LivePoliteness = @splat(.off),
     ann_head: usize = 0,
     ann_count: usize = 0,
 

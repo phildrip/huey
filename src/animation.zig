@@ -387,9 +387,9 @@ pub const AnimationPool = struct {
     pub const MAX_SPRINGS: usize = POOL_MAX_SPRINGS;
     pub const MAX_COLORS: usize = POOL_MAX_COLORS;
 
-    springs: [POOL_MAX_SPRINGS]SpringEntry = [_]SpringEntry{.{}} ** POOL_MAX_SPRINGS,
+    springs: [POOL_MAX_SPRINGS]SpringEntry = @splat(.{}),
     spring_count: usize = 0,
-    colors: [POOL_MAX_COLORS]ColorEntry = [_]ColorEntry{.{}} ** POOL_MAX_COLORS,
+    colors: [POOL_MAX_COLORS]ColorEntry = @splat(.{}),
     color_count: usize = 0,
     touch_counter: u64 = 0,
     reduced_motion: bool = false,

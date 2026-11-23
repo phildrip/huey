@@ -64,10 +64,11 @@ mkdir -p "$APK_STAGING/lib/arm64-v8a"
 cat > "$BUILD_DIR/android-libc.txt" <<EOF
 include_dir=$SYSROOT_INC
 sys_include_dir=$TARGET_INC
+cc_dir=$NDK_LIBS
 crt_dir=$NDK_LIBS
 msvc_lib_dir=
 kernel32_lib_dir=
-gcc_dir=
+darwin_sdk_dir=
 EOF
 
 echo "[1/5] Compiling libhuey.so (aarch64-linux-android, ReleaseSmall)..."

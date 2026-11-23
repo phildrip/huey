@@ -13,22 +13,203 @@ const ActiveShowcase = if (IS_WEAR) @import("wear_showcase_scene.zig").WearShowc
 const DEFAULT_LW: f32 = if (IS_WEAR) 233.0 else 768.0;
 const DEFAULT_LH: f32 = if (IS_WEAR) 233.0 else 1024.0;
 
-const c = @cImport({
-    @cDefine("BIONIC_IOCTL_NO_SIGNEDNESS_OVERLOAD", "1");
-    @cInclude("pthread.h");
-    @cInclude("unistd.h");
-    @cInclude("fcntl.h");
-    @cInclude("sys/stat.h");
-    @cInclude("time.h");
-    @cInclude("EGL/egl.h");
-    @cInclude("android/native_activity.h");
-    @cInclude("android/looper.h");
-    @cInclude("android/input.h");
-    @cInclude("android/configuration.h");
-    @cInclude("android/native_window.h");
-    @cInclude("android/choreographer.h");
-    @cInclude("android/log.h");
-});
+const c = struct {
+    pub const AAssetManager = opaque {};
+    pub const AConfiguration = opaque {};
+    pub const AInputEvent = opaque {};
+    pub const AInputQueue = opaque {};
+    pub const ALooper = opaque {};
+    pub const ANativeWindow = opaque {};
+    pub const AChoreographer = opaque {};
+
+    pub const ARect = extern struct {
+        left: i32,
+        top: i32,
+        right: i32,
+        bottom: i32,
+    };
+
+    pub const ANativeActivityCallbacks = extern struct {
+        onStart: ?*const fn ([*c]ANativeActivity) callconv(.c) void,
+        onResume: ?*const fn ([*c]ANativeActivity) callconv(.c) void,
+        onSaveInstanceState: ?*const fn ([*c]ANativeActivity, *usize) callconv(.c) ?*anyopaque,
+        onPause: ?*const fn ([*c]ANativeActivity) callconv(.c) void,
+        onStop: ?*const fn ([*c]ANativeActivity) callconv(.c) void,
+        onDestroy: ?*const fn ([*c]ANativeActivity) callconv(.c) void,
+        onWindowFocusChanged: ?*const fn ([*c]ANativeActivity, c_int) callconv(.c) void,
+        onNativeWindowCreated: ?*const fn ([*c]ANativeActivity, ?*ANativeWindow) callconv(.c) void,
+        onNativeWindowResized: ?*const fn ([*c]ANativeActivity, ?*ANativeWindow) callconv(.c) void,
+        onNativeWindowRedrawNeeded: ?*const fn ([*c]ANativeActivity, ?*ANativeWindow) callconv(.c) void,
+        onNativeWindowDestroyed: ?*const fn ([*c]ANativeActivity, ?*ANativeWindow) callconv(.c) void,
+        onInputQueueCreated: ?*const fn ([*c]ANativeActivity, ?*AInputQueue) callconv(.c) void,
+        onInputQueueDestroyed: ?*const fn ([*c]ANativeActivity, ?*AInputQueue) callconv(.c) void,
+        onContentRectChanged: ?*const fn ([*c]ANativeActivity, ?*const ARect) callconv(.c) void,
+        onConfigurationChanged: ?*const fn ([*c]ANativeActivity) callconv(.c) void,
+        onLowMemory: ?*const fn ([*c]ANativeActivity) callconv(.c) void,
+    };
+
+    pub const ANativeActivity = extern struct {
+        callbacks: *ANativeActivityCallbacks,
+        vm: ?*anyopaque,
+        env: ?*anyopaque,
+        clazz: ?*anyopaque,
+        internalDataPath: [*:0]const u8,
+        externalDataPath: [*:0]const u8,
+        sdkVersion: i32,
+        instance: ?*anyopaque,
+        assetManager: ?*AAssetManager,
+        obbPath: [*:0]const u8,
+    };
+
+    pub const ALooper_callbackFunc = ?*const fn (fd: c_int, events: c_int, data: ?*anyopaque) callconv(.c) c_int;
+    pub const AChoreographer_frameCallback = *const fn (frame_time_nanos: c_long, data: ?*anyopaque) callconv(.c) void;
+
+    pub const EGLint = i32;
+    pub const EGLBoolean = c_uint;
+    pub const EGLDisplay = ?*anyopaque;
+    pub const EGLConfig = ?*anyopaque;
+    pub const EGLSurface = ?*anyopaque;
+    pub const EGLContext = ?*anyopaque;
+    pub const EGLNativeDisplayType = ?*anyopaque;
+    pub const EGLNativeWindowType = ?*ANativeWindow;
+
+    pub const EGL_NO_DISPLAY: EGLDisplay = null;
+    pub const EGL_NO_CONTEXT: EGLContext = null;
+    pub const EGL_NO_SURFACE: EGLSurface = null;
+    pub const EGL_DEFAULT_DISPLAY: EGLNativeDisplayType = null;
+    pub const EGL_FALSE: EGLBoolean = 0;
+    pub const EGL_ALPHA_SIZE: EGLint = 0x3021;
+    pub const EGL_BLUE_SIZE: EGLint = 0x3022;
+    pub const EGL_GREEN_SIZE: EGLint = 0x3023;
+    pub const EGL_RED_SIZE: EGLint = 0x3024;
+    pub const EGL_NATIVE_VISUAL_ID: EGLint = 0x302E;
+    pub const EGL_SURFACE_TYPE: EGLint = 0x3033;
+    pub const EGL_NONE: EGLint = 0x3038;
+    pub const EGL_RENDERABLE_TYPE: EGLint = 0x3040;
+    pub const EGL_HEIGHT: EGLint = 0x3056;
+    pub const EGL_WIDTH: EGLint = 0x3057;
+    pub const EGL_WINDOW_BIT: EGLint = 0x0004;
+    pub const EGL_OPENGL_ES2_BIT: EGLint = 0x0004;
+    pub const EGL_OPENGL_ES3_BIT: EGLint = 0x00000040;
+    pub const EGL_CONTEXT_CLIENT_VERSION: EGLint = 0x3098;
+
+    pub const ANDROID_LOG_INFO: c_int = 4;
+    pub const ANDROID_LOG_ERROR: c_int = 6;
+
+    pub const ALOOPER_PREPARE_ALLOW_NON_CALLBACKS: c_int = 1 << 0;
+    pub const ALOOPER_EVENT_INPUT: c_int = 1 << 0;
+    pub const ALOOPER_EVENT_ERROR: c_int = 1 << 2;
+    pub const ALOOPER_EVENT_HANGUP: c_int = 1 << 3;
+
+    pub const AINPUT_EVENT_TYPE_KEY: i32 = 1;
+    pub const AINPUT_EVENT_TYPE_MOTION: i32 = 2;
+    pub const AKEY_EVENT_ACTION_DOWN: i32 = 0;
+    pub const AMETA_SHIFT_ON: i32 = 0x01;
+
+    pub const AMOTION_EVENT_ACTION_MASK: i32 = 0xff;
+    pub const AMOTION_EVENT_ACTION_POINTER_INDEX_MASK: i32 = 0xff00;
+    pub const AMOTION_EVENT_ACTION_POINTER_INDEX_SHIFT = 8;
+    pub const AMOTION_EVENT_ACTION_DOWN: i32 = 0;
+    pub const AMOTION_EVENT_ACTION_UP: i32 = 1;
+    pub const AMOTION_EVENT_ACTION_MOVE: i32 = 2;
+    pub const AMOTION_EVENT_ACTION_CANCEL: i32 = 3;
+    pub const AMOTION_EVENT_ACTION_POINTER_DOWN: i32 = 5;
+    pub const AMOTION_EVENT_ACTION_POINTER_UP: i32 = 6;
+    pub const AMOTION_EVENT_ACTION_HOVER_MOVE: i32 = 7;
+    pub const AMOTION_EVENT_ACTION_SCROLL: i32 = 8;
+    pub const AMOTION_EVENT_ACTION_HOVER_EXIT: i32 = 10;
+
+    pub const AMOTION_EVENT_AXIS_VSCROLL: i32 = 9;
+    pub const AMOTION_EVENT_AXIS_HSCROLL: i32 = 10;
+    pub const AMOTION_EVENT_AXIS_SCROLL: i32 = 26;
+    pub const AMOTION_EVENT_BUTTON_SECONDARY: i32 = 1 << 1;
+    pub const AMOTION_EVENT_BUTTON_TERTIARY: i32 = 1 << 2;
+    pub const AMOTION_EVENT_TOOL_TYPE_MOUSE: i32 = 3;
+
+    pub const pthread_mutex_t = std.c.pthread_mutex_t;
+    pub const pthread_cond_t = std.c.pthread_cond_t;
+    pub const pthread_t = std.c.pthread_t;
+    pub const struct_timespec = std.c.timespec;
+    pub const CLOCK_MONOTONIC = std.c.CLOCK.MONOTONIC;
+    pub const F_GETFL = std.c.F.GETFL;
+    pub const F_SETFL = std.c.F.SETFL;
+    pub const O_RDONLY: std.c.O = .{ .ACCMODE = .RDONLY };
+    pub const O_NONBLOCK: c_int = @bitCast(std.c.O{ .NONBLOCK = true });
+
+    pub const open = std.c.open;
+    pub const read = std.c.read;
+    pub const write = std.c.write;
+    pub const close = std.c.close;
+    pub const pipe = std.c.pipe;
+    pub const fcntl = std.c.fcntl;
+    pub const lseek64 = std.c.lseek64;
+    pub const clock_gettime = std.c.clock_gettime;
+    pub const pthread_create = std.c.pthread_create;
+    pub const pthread_join = std.c.pthread_join;
+    pub const pthread_mutex_lock = std.c.pthread_mutex_lock;
+    pub const pthread_mutex_unlock = std.c.pthread_mutex_unlock;
+    pub const pthread_mutex_destroy = std.c.pthread_mutex_destroy;
+    pub const pthread_cond_wait = std.c.pthread_cond_wait;
+    pub const pthread_cond_broadcast = std.c.pthread_cond_broadcast;
+    pub const pthread_cond_destroy = std.c.pthread_cond_destroy;
+
+    pub extern "c" fn pthread_mutex_init(mutex: *pthread_mutex_t, attr: ?*const anyopaque) c_int;
+    pub extern "c" fn pthread_cond_init(cond: *pthread_cond_t, attr: ?*const anyopaque) c_int;
+    pub extern "c" fn __android_log_print(prio: c_int, tag: [*:0]const u8, fmt: [*:0]const u8, ...) c_int;
+
+    pub extern "c" fn ALooper_prepare(opts: c_int) ?*ALooper;
+    pub extern "c" fn ALooper_pollOnce(timeout_millis: c_int, out_fd: ?*c_int, out_events: ?*c_int, out_data: ?*?*anyopaque) c_int;
+    pub extern "c" fn ALooper_addFd(looper: *ALooper, fd: c_int, ident: c_int, events: c_int, callback: ALooper_callbackFunc, data: ?*anyopaque) c_int;
+
+    pub extern "c" fn AChoreographer_getInstance() ?*AChoreographer;
+    pub extern "c" fn AChoreographer_postFrameCallback(choreographer: *AChoreographer, callback: AChoreographer_frameCallback, data: ?*anyopaque) void;
+
+    pub extern "c" fn AConfiguration_new() ?*AConfiguration;
+    pub extern "c" fn AConfiguration_delete(config: *AConfiguration) void;
+    pub extern "c" fn AConfiguration_fromAssetManager(out: *AConfiguration, am: *AAssetManager) void;
+    pub extern "c" fn AConfiguration_getDensity(config: *AConfiguration) i32;
+
+    pub extern "c" fn ANativeWindow_getWidth(window: *ANativeWindow) i32;
+    pub extern "c" fn ANativeWindow_getHeight(window: *ANativeWindow) i32;
+    pub extern "c" fn ANativeWindow_setBuffersGeometry(window: *ANativeWindow, width: i32, height: i32, format: i32) i32;
+
+    pub extern "c" fn AInputEvent_getType(event: *const AInputEvent) i32;
+    pub extern "c" fn AKeyEvent_getAction(key_event: *const AInputEvent) i32;
+    pub extern "c" fn AKeyEvent_getKeyCode(key_event: *const AInputEvent) i32;
+    pub extern "c" fn AKeyEvent_getMetaState(key_event: *const AInputEvent) i32;
+
+    pub extern "c" fn AMotionEvent_getAction(motion_event: *const AInputEvent) i32;
+    pub extern "c" fn AMotionEvent_getButtonState(motion_event: *const AInputEvent) i32;
+    pub extern "c" fn AMotionEvent_getEventTime(motion_event: *const AInputEvent) i64;
+    pub extern "c" fn AMotionEvent_getPointerCount(motion_event: *const AInputEvent) usize;
+    pub extern "c" fn AMotionEvent_getPointerId(motion_event: *const AInputEvent, pointer_index: usize) i32;
+    pub extern "c" fn AMotionEvent_getToolType(motion_event: *const AInputEvent, pointer_index: usize) i32;
+    pub extern "c" fn AMotionEvent_getX(motion_event: *const AInputEvent, pointer_index: usize) f32;
+    pub extern "c" fn AMotionEvent_getY(motion_event: *const AInputEvent, pointer_index: usize) f32;
+    pub extern "c" fn AMotionEvent_getAxisValue(motion_event: *const AInputEvent, axis: i32, pointer_index: usize) f32;
+
+    pub extern "c" fn AInputQueue_attachLooper(queue: *AInputQueue, looper: *ALooper, ident: c_int, callback: ALooper_callbackFunc, data: ?*anyopaque) void;
+    pub extern "c" fn AInputQueue_detachLooper(queue: *AInputQueue) void;
+    pub extern "c" fn AInputQueue_hasEvents(queue: *AInputQueue) i32;
+    pub extern "c" fn AInputQueue_getEvent(queue: *AInputQueue, out_event: *?*AInputEvent) i32;
+    pub extern "c" fn AInputQueue_preDispatchEvent(queue: *AInputQueue, event: *AInputEvent) i32;
+    pub extern "c" fn AInputQueue_finishEvent(queue: *AInputQueue, event: *AInputEvent, handled: c_int) void;
+
+    pub extern "c" fn eglGetDisplay(display_id: EGLNativeDisplayType) EGLDisplay;
+    pub extern "c" fn eglInitialize(dpy: EGLDisplay, major: ?*EGLint, minor: ?*EGLint) EGLBoolean;
+    pub extern "c" fn eglChooseConfig(dpy: EGLDisplay, attrib_list: [*]const EGLint, configs: [*]EGLConfig, config_size: EGLint, num_config: *EGLint) EGLBoolean;
+    pub extern "c" fn eglGetConfigAttrib(dpy: EGLDisplay, config: EGLConfig, attribute: EGLint, value: *EGLint) EGLBoolean;
+    pub extern "c" fn eglCreateWindowSurface(dpy: EGLDisplay, config: EGLConfig, win: EGLNativeWindowType, attrib_list: ?[*]const EGLint) EGLSurface;
+    pub extern "c" fn eglCreateContext(dpy: EGLDisplay, config: EGLConfig, share_context: EGLContext, attrib_list: [*]const EGLint) EGLContext;
+    pub extern "c" fn eglMakeCurrent(dpy: EGLDisplay, draw: EGLSurface, read: EGLSurface, ctx: EGLContext) EGLBoolean;
+    pub extern "c" fn eglQuerySurface(dpy: EGLDisplay, surface: EGLSurface, attribute: EGLint, value: *EGLint) EGLBoolean;
+    pub extern "c" fn eglSwapInterval(dpy: EGLDisplay, interval: EGLint) EGLBoolean;
+    pub extern "c" fn eglSwapBuffers(dpy: EGLDisplay, surface: EGLSurface) EGLBoolean;
+    pub extern "c" fn eglDestroySurface(dpy: EGLDisplay, surface: EGLSurface) EGLBoolean;
+    pub extern "c" fn eglDestroyContext(dpy: EGLDisplay, ctx: EGLContext) EGLBoolean;
+    pub extern "c" fn eglTerminate(dpy: EGLDisplay) EGLBoolean;
+    pub extern "c" fn eglGetError() EGLint;
+};
 
 const LOG_TAG: [*:0]const u8 = "Huey";
 const LOOPER_ID_MAIN: c_int = 1;
@@ -77,12 +258,12 @@ const AppState = struct {
 };
 
 fn writeCmdByte(fd: c_int, cmd: Cmd) bool {
-    var b: u8 = @intFromEnum(cmd);
+    var b: [1]u8 = .{@backingInt(cmd)};
     while (true) {
         const rc = c.write(fd, &b, 1);
         if (rc == 1) return true;
         if (rc < 0) {
-            if (std.c._errno().* == @intFromEnum(std.posix.E.INTR)) continue;
+            if (std.c._errno().* == @backingInt(std.posix.E.INTR)) continue;
             return false;
         }
         return false;
@@ -105,16 +286,16 @@ fn readFileAllocPosix(allocator: std.mem.Allocator, path: [*:0]const u8, max_byt
     while (true) {
         fd = c.open(path, c.O_RDONLY);
         if (fd >= 0) break;
-        if (std.c._errno().* == @intFromEnum(std.posix.E.INTR)) continue;
+        if (std.c._errno().* == @backingInt(std.posix.E.INTR)) continue;
         return null;
     }
     defer _ = c.close(fd);
 
-    var st: c.struct_stat = undefined;
-    if (c.fstat(fd, &st) != 0 or st.st_size <= 0 or st.st_size > max_bytes) {
+    const end_off = c.lseek64(fd, 0, 2);
+    if (end_off <= 0 or end_off > max_bytes or c.lseek64(fd, 0, 0) != 0) {
         return null;
     }
-    const size: usize = @intCast(st.st_size);
+    const size: usize = @intCast(end_off);
     const buf = allocator.alloc(u8, size) catch return null;
 
     var total: usize = 0;
@@ -126,7 +307,7 @@ fn readFileAllocPosix(allocator: std.mem.Allocator, path: [*:0]const u8, max_byt
             allocator.free(buf);
             return null;
         } else {
-            if (std.c._errno().* == @intFromEnum(std.posix.E.INTR)) continue;
+            if (std.c._errno().* == @backingInt(std.posix.E.INTR)) continue;
             allocator.free(buf);
             return null;
         }
@@ -197,16 +378,17 @@ const EglState = struct {
             c.EGL_NONE,
         };
 
-        var config: c.EGLConfig = null;
+        var configs: [1]c.EGLConfig = .{null};
         var num_configs: c.EGLint = 0;
-        if (c.eglChooseConfig(display, &attribs, &config, 1, &num_configs) == 0 or num_configs == 0) {
+        if (c.eglChooseConfig(display, &attribs, &configs, 1, &num_configs) == 0 or num_configs == 0) {
             attribs[1] = c.EGL_OPENGL_ES2_BIT;
-            if (c.eglChooseConfig(display, &attribs, &config, 1, &num_configs) == 0 or num_configs == 0) {
+            if (c.eglChooseConfig(display, &attribs, &configs, 1, &num_configs) == 0 or num_configs == 0) {
                 logErr("eglChooseConfig failed", .{});
                 _ = c.eglTerminate(display);
                 return null;
             }
         }
+        const config = configs[0];
 
         var format: c.EGLint = 0;
         _ = c.eglGetConfigAttrib(display, config, c.EGL_NATIVE_VISUAL_ID, &format);
@@ -294,7 +476,7 @@ const MouseButtonTracker = struct {
         pointer_id: i32 = 0,
         button: events.PointerButton = .primary,
     };
-    entries: [8]Entry = [_]Entry{.{}} ** 8,
+    entries: [8]Entry = @splat(.{}),
 
     fn buttonFromEvent(ev: *const c.AInputEvent, is_touch: bool) events.PointerButton {
         if (is_touch) return .primary;
@@ -369,7 +551,7 @@ const TouchScrollState = struct {
 fn monotonicSeconds() f64 {
     var ts: c.struct_timespec = undefined;
     if (c.clock_gettime(c.CLOCK_MONOTONIC, &ts) != 0) return 0.0;
-    return @as(f64, @floatFromInt(ts.tv_sec)) + @as(f64, @floatFromInt(ts.tv_nsec)) / 1_000_000_000.0;
+    return @as(f64, @floatFromInt(ts.sec)) + @as(f64, @floatFromInt(ts.nsec)) / 1_000_000_000.0;
 }
 
 fn motionEventSeconds(ev: *const c.AInputEvent) f64 {
@@ -618,20 +800,21 @@ fn workerMain(arg: ?*anyopaque) callconv(.c) ?*anyopaque {
                     quit = true;
                     break;
                 }
-                var cmd_byte: u8 = 0;
+                var cmd_buf: [1]u8 = .{0};
                 while (!quit) {
-                    const rc = c.read(state.msgread, &cmd_byte, 1);
+                    const rc = c.read(state.msgread, &cmd_buf, 1);
                     if (rc == 0) {
                         quit = true;
                         break;
                     }
                     if (rc < 0) {
                         const err_no = std.c._errno().*;
-                        if (err_no == @intFromEnum(std.posix.E.INTR)) continue;
-                        if (err_no == @intFromEnum(std.posix.E.AGAIN)) break;
+                        if (err_no == @backingInt(std.posix.E.INTR)) continue;
+                        if (err_no == @backingInt(std.posix.E.AGAIN)) break;
                         quit = true;
                         break;
                     }
+                    const cmd_byte = cmd_buf[0];
 
                     const cmd = std.enums.fromInt(Cmd, cmd_byte) orelse continue;
                     switch (cmd) {
@@ -1454,8 +1637,8 @@ fn workerMain(arg: ?*anyopaque) callconv(.c) ?*anyopaque {
                 signalRedrawAck(state);
 
                 _ = c.clock_gettime(c.CLOCK_MONOTONIC, &t1);
-                const dt_ns: i64 = (@as(i64, t1.tv_sec) - @as(i64, t0.tv_sec)) * 1_000_000_000 +
-                    (@as(i64, t1.tv_nsec) - @as(i64, t0.tv_nsec));
+                const dt_ns: i64 = (@as(i64, t1.sec) - @as(i64, t0.sec)) * 1_000_000_000 +
+                    (@as(i64, t1.nsec) - @as(i64, t0.nsec));
                 const dt_ms = @as(f64, @floatFromInt(dt_ns)) / 1_000_000.0;
                 showcase.last_frame_ms = @floatCast(dt_ms);
                 showcase.last_quad_count = quad_count;
@@ -1735,7 +1918,7 @@ export fn ANativeActivity_onCreate(
 
     activity.*.instance = state;
 
-    if (c.pthread_create(&state.thread, null, workerMain, state) != 0) {
+    if (c.pthread_create(&state.thread, null, workerMain, state) != .SUCCESS) {
         logErr("pthread_create failed", .{});
         _ = c.close(fds[0]);
         _ = c.close(fds[1]);

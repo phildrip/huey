@@ -247,7 +247,7 @@ pub const ShowcaseApp = struct {
     counter_buf: [32]u8 = undefined,
     stats_buf: [64]u8 = undefined,
     slider_buf: [32]u8 = undefined,
-    vin_buf: [17]u8 = [_]u8{0} ** 17,
+    vin_buf: [17]u8 = @splat(0),
     vin_len: usize = 0,
     vin_focused: bool = false,
     vin_caret_on: bool = true,
@@ -1616,7 +1616,7 @@ pub const ShowcaseApp = struct {
         const inner_w = @max(0.0, vw - 4.0 - 4.0 * tab_gap);
         const each_w = inner_w * 0.2;
         const ind_w = @min(@max(16.0, each_w * 0.56), each_w);
-        const idx: f32 = @floatFromInt(@intFromEnum(tab));
+        const idx: f32 = @floatFromInt(@backingInt(tab));
         const tab_x = 2.0 + idx * (each_w + tab_gap);
         return tab_x + (each_w - ind_w) * 0.5;
     }

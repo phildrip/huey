@@ -285,7 +285,7 @@ pub fn parseGtkThemePreference(theme_name: []const u8, prefer_dark_flag: bool) C
 
     var pos: usize = 0;
     while (pos + 4 <= theme_name.len) {
-        const rel = std.ascii.indexOfIgnoreCase(theme_name[pos..], "dark") orelse break;
+        const rel = std.ascii.findIgnoreCase(theme_name[pos..], "dark") orelse break;
         const idx = pos + rel;
         const before_ok = (idx == 0) or !std.ascii.isAlphanumeric(theme_name[idx - 1]);
         const after_ok = (idx + 4 == theme_name.len) or !std.ascii.isAlphanumeric(theme_name[idx + 4]);

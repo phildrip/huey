@@ -50,7 +50,7 @@ pub const CarIcon = enum {
 };
 
 pub const ToastEntry = struct {
-    msg: [MAX_TOAST_MSG_LEN]u8 = [_]u8{0} ** MAX_TOAST_MSG_LEN,
+    msg: [MAX_TOAST_MSG_LEN]u8 = @splat(0),
     len: usize = 0,
     variant: AlertVariant = .info,
     ttl_s: f64 = 0.0,
@@ -65,7 +65,7 @@ pub const ToastEntry = struct {
 };
 
 pub const ToastQueue = struct {
-    entries: [MAX_TOASTS]ToastEntry = [_]ToastEntry{.{}} ** MAX_TOASTS,
+    entries: [MAX_TOASTS]ToastEntry = @splat(.{}),
     count: usize = 0,
 
     /// Creates an empty zero-allocation toast queue.

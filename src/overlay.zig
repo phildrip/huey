@@ -471,11 +471,11 @@ pub fn encodeXdgPositioner(
     _ = try enc.finish(positioner_id, XDG_POSITIONER_SET_ANCHOR_RECT);
 
     // 3. set_anchor(anchor)
-    try enc.writeU32(@intFromEnum(spec.anchor));
+    try enc.writeU32(@backingInt(spec.anchor));
     _ = try enc.finish(positioner_id, XDG_POSITIONER_SET_ANCHOR);
 
     // 4. set_gravity(gravity)
-    try enc.writeU32(@intFromEnum(spec.gravity));
+    try enc.writeU32(@backingInt(spec.gravity));
     _ = try enc.finish(positioner_id, XDG_POSITIONER_SET_GRAVITY);
 
     // 5. set_constraint_adjustment(constraint_adjustment)
@@ -676,4 +676,3 @@ test "XdgPositioner: decodes all 7 wire frames and validates constraints" {
 
     try std.testing.expectEqual(bytes.len, off);
 }
-

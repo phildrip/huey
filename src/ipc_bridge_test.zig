@@ -44,7 +44,7 @@ test "IPC bridge handles inspect, toggle, set_value, and rejects invalid/disable
 test "IpcServer accepts real AF_UNIX client, serves NDJSON inspect + toggle, and cleans up socket" {
     var path_buf: [96]u8 = undefined;
     const pid = std.os.linux.getpid();
-    const path = try std.fmt.bufPrintZ(&path_buf, "/tmp/ziggui_ipc_test_{d}.sock", .{pid});
+    const path = try std.fmt.bufPrintSentinel(&path_buf, "/tmp/ziggui_ipc_test_{d}.sock", .{pid}, 0);
 
     var server = try ipc.IpcServer.bind(std.testing.allocator, path);
     defer server.deinit();
@@ -121,7 +121,7 @@ test "IPC bridge rejects malformed JSON, oversized requests, and unknown command
     // 5. Oversized request over real AF_UNIX socket
     var path_buf: [96]u8 = undefined;
     const pid = std.os.linux.getpid();
-    const path = try std.fmt.bufPrintZ(&path_buf, "/tmp/ziggui_ipc_oversize_{d}.sock", .{pid});
+    const path = try std.fmt.bufPrintSentinel(&path_buf, "/tmp/ziggui_ipc_oversize_{d}.sock", .{pid}, 0);
     var server = try ipc.IpcServer.bind(std.testing.allocator, path);
     defer server.deinit();
 
@@ -154,7 +154,7 @@ test "IPC bridge rejects disabled and modal-trapped toggles and executes scroll 
 
     var path_buf: [96]u8 = undefined;
     const pid = std.os.linux.getpid();
-    const path = try std.fmt.bufPrintZ(&path_buf, "/tmp/ziggui_ipc_scroll_{d}.sock", .{pid});
+    const path = try std.fmt.bufPrintSentinel(&path_buf, "/tmp/ziggui_ipc_scroll_{d}.sock", .{pid}, 0);
     var server = try ipc.IpcServer.bind(std.testing.allocator, path);
     defer server.deinit();
 
@@ -215,7 +215,7 @@ test "IpcServer handles split slowloris framing, rejects EOF without newline, an
     const linux = std.os.linux;
     var path_buf: [96]u8 = undefined;
     const pid = linux.getpid();
-    const path = try std.fmt.bufPrintZ(&path_buf, "/tmp/ziggui_ipc_slowloris_{d}.sock", .{pid});
+    const path = try std.fmt.bufPrintSentinel(&path_buf, "/tmp/ziggui_ipc_slowloris_{d}.sock", .{pid}, 0);
 
     var server = try ipc.IpcServer.bind(std.testing.allocator, path);
     defer server.deinit();
@@ -237,7 +237,7 @@ test "IpcServer handles split slowloris framing, rejects EOF without newline, an
             const rc = linux.socket(linux.AF.UNIX, linux.SOCK.STREAM | linux.SOCK.NONBLOCK | linux.SOCK.CLOEXEC, 0);
             try std.testing.expectEqual(linux.E.SUCCESS, linux.errno(rc));
             const fd: i32 = @intCast(rc);
-            var addr: linux.sockaddr.un = .{ .family = linux.AF.UNIX, .path = [_]u8{0} ** 108 };
+            var addr: linux.sockaddr.un = .{ .family = linux.AF.UNIX, .path = @splat(0) };
             @memcpy(addr.path[0..pslice.len], pslice);
             const alen: linux.socklen_t = @intCast(@offsetOf(linux.sockaddr.un, "path") + pslice.len + 1);
             try std.testing.expectEqual(linux.E.SUCCESS, linux.errno(linux.connect(fd, @ptrCast(&addr), alen)));
@@ -295,7 +295,7 @@ test "IpcServer.bind refuses to unlink regular files and enforces CRLF / MAX_REQ
     const linux = std.os.linux;
     var reg_path_buf: [96]u8 = undefined;
     const pid = linux.getpid();
-    const reg_path = try std.fmt.bufPrintZ(&reg_path_buf, "/tmp/ziggui_not_a_sock_{d}", .{pid});
+    const reg_path = try std.fmt.bufPrintSentinel(&reg_path_buf, "/tmp/ziggui_not_a_sock_{d}", .{pid}, 0);
 
     // Create a regular file at reg_path
     const fd_rc = linux.openat(linux.AT.FDCWD, reg_path, .{ .ACCMODE = .WRONLY, .CREAT = true, .TRUNC = true }, 0o644);
@@ -318,7 +318,7 @@ test "IpcServer.bind refuses to unlink regular files and enforces CRLF / MAX_REQ
 
     // Boundary framing tests: CRLF at 4096 bytes, empty "\n", and > MAX_REQ_BYTES without '\n'
     var sock_path_buf: [96]u8 = undefined;
-    const sock_path = try std.fmt.bufPrintZ(&sock_path_buf, "/tmp/ziggui_ipc_crlf_{d}.sock", .{pid});
+    const sock_path = try std.fmt.bufPrintSentinel(&sock_path_buf, "/tmp/ziggui_ipc_crlf_{d}.sock", .{pid}, 0);
     var server = try ipc.IpcServer.bind(std.testing.allocator, sock_path);
     defer server.deinit();
 
@@ -354,7 +354,7 @@ test "IpcServer.bind refuses to unlink regular files and enforces CRLF / MAX_REQ
     try std.testing.expectEqual(linux.E.SUCCESS, linux.errno(c_split_rc));
     const c_split: i32 = @intCast(c_split_rc);
     defer _ = linux.close(c_split);
-    var saddr: linux.sockaddr.un = .{ .family = linux.AF.UNIX, .path = [_]u8{0} ** 108 };
+    var saddr: linux.sockaddr.un = .{ .family = linux.AF.UNIX, .path = @splat(0) };
     @memcpy(saddr.path[0..sock_path.len], sock_path);
     const sal_len: linux.socklen_t = @intCast(@offsetOf(linux.sockaddr.un, "path") + sock_path.len + 1);
     try std.testing.expectEqual(linux.E.SUCCESS, linux.errno(linux.connect(c_split, @ptrCast(&saddr), sal_len)));

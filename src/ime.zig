@@ -5,13 +5,13 @@ pub const MAX_IME_BUF: usize = 256;
 
 /// Zero-allocation IME composition and commit state.
 pub const ImeState = struct {
-    preedit_buf: [MAX_IME_BUF]u8 = [_]u8{0} ** MAX_IME_BUF,
+    preedit_buf: [MAX_IME_BUF]u8 = @splat(0),
     preedit_len: usize = 0,
     cursor_start: usize = 0,
     cursor_end: usize = 0,
     composing: bool = false,
 
-    committed_buf: [MAX_IME_BUF]u8 = [_]u8{0} ** MAX_IME_BUF,
+    committed_buf: [MAX_IME_BUF]u8 = @splat(0),
     committed_len: usize = 0,
     has_committed: bool = false,
 

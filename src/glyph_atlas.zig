@@ -1,10 +1,18 @@
 const std = @import("std");
 const core = @import("core.zig");
 
-const c = @cImport({
-    @cInclude("stddef.h");
-    @cInclude("stb_truetype.h");
-});
+const StbttFontInfo = extern struct {
+    storage: [512]u8 align(16) = undefined,
+};
+
+extern "c" fn huey_stbtt_get_font_offset_for_index(data: [*]const u8, index: c_int) c_int;
+extern "c" fn huey_stbtt_init_font(info_buf: *StbttFontInfo, data: [*]const u8, offset: c_int) c_int;
+extern "c" fn huey_stbtt_get_font_vmetrics(info_buf: *const StbttFontInfo, ascent: *c_int, descent: *c_int, line_gap: *c_int) void;
+extern "c" fn huey_stbtt_scale_for_pixel_height(info_buf: *const StbttFontInfo, pixels: f32) f32;
+extern "c" fn huey_stbtt_get_codepoint_hmetrics(info_buf: *const StbttFontInfo, codepoint: c_int, advance_width: *c_int, left_side_bearing: *c_int) void;
+extern "c" fn huey_stbtt_get_codepoint_bitmap_box(info_buf: *const StbttFontInfo, codepoint: c_int, scale_x: f32, scale_y: f32, ix0: *c_int, iy0: *c_int, ix1: *c_int, iy1: *c_int) void;
+extern "c" fn huey_stbtt_make_codepoint_bitmap(info_buf: *const StbttFontInfo, output: [*]u8, out_w: c_int, out_h: c_int, out_stride: c_int, scale_x: f32, scale_y: f32, codepoint: c_int) void;
+extern "c" fn huey_stbtt_get_codepoint_kern_advance(info_buf: *const StbttFontInfo, ch1: c_int, ch2: c_int) c_int;
 
 pub const GlyphKey = struct {
     codepoint: u21,
@@ -129,7 +137,7 @@ fn quantizeSizePx(font_size_logical: f32, scale: f32) struct { q4: u16, px: f32 
 pub const GlyphAtlas = struct {
     allocator: std.mem.Allocator,
     font_bytes: []u8,
-    font: c.stbtt_fontinfo,
+    font: StbttFontInfo,
     width: u32,
     height: u32,
     pixels: []u8,
@@ -158,19 +166,19 @@ pub const GlyphAtlas = struct {
         const owned_font = try allocator.dupe(u8, font_bytes);
         errdefer allocator.free(owned_font);
 
-        const offset = c.stbtt_GetFontOffsetForIndex(owned_font.ptr, 0);
+        const offset = huey_stbtt_get_font_offset_for_index(owned_font.ptr, 0);
         if (offset < 0 or @as(usize, @intCast(offset)) >= owned_font.len) {
             return error.InvalidFont;
         }
-        var font_info: c.stbtt_fontinfo = undefined;
-        if (c.stbtt_InitFont(&font_info, owned_font.ptr, offset) == 0) {
+        var font_info: StbttFontInfo = .{};
+        if (huey_stbtt_init_font(&font_info, owned_font.ptr, offset) == 0) {
             return error.InvalidFont;
         }
 
         var asc_i: c_int = 0;
         var desc_i: c_int = 0;
         var gap_i: c_int = 0;
-        c.stbtt_GetFontVMetrics(&font_info, &asc_i, &desc_i, &gap_i);
+        huey_stbtt_get_font_vmetrics(&font_info, &asc_i, &desc_i, &gap_i);
         if (asc_i - desc_i <= 0) {
             return error.InvalidFont;
         }
@@ -250,17 +258,17 @@ pub const GlyphAtlas = struct {
         size_px: f32,
         frame_idx: u64,
     ) !?GlyphEntry {
-        const stb_scale = c.stbtt_ScaleForPixelHeight(&self.font, size_px);
+        const stb_scale = huey_stbtt_scale_for_pixel_height(&self.font, size_px);
         var adv_w: c_int = 0;
         var lsb: c_int = 0;
-        c.stbtt_GetCodepointHMetrics(&self.font, @intCast(cp), &adv_w, &lsb);
+        huey_stbtt_get_codepoint_hmetrics(&self.font, @intCast(cp), &adv_w, &lsb);
         const advance = @as(f32, @floatFromInt(adv_w)) * stb_scale;
 
         var ix0: c_int = 0;
         var iy0: c_int = 0;
         var ix1: c_int = 0;
         var iy1: c_int = 0;
-        c.stbtt_GetCodepointBitmapBox(&self.font, @intCast(cp), stb_scale, stb_scale, &ix0, &iy0, &ix1, &iy1);
+        huey_stbtt_get_codepoint_bitmap_box(&self.font, @intCast(cp), stb_scale, stb_scale, &ix0, &iy0, &ix1, &iy1);
 
         const bw_i = ix1 - ix0;
         const bh_i = iy1 - iy0;
@@ -290,7 +298,7 @@ pub const GlyphAtlas = struct {
         const pos = self.packRect(bw, bh) orelse return null;
 
         const dst_offset = @as(usize, pos.y) * @as(usize, self.width) + @as(usize, pos.x);
-        c.stbtt_MakeCodepointBitmap(
+        huey_stbtt_make_codepoint_bitmap(
             &self.font,
             self.pixels[dst_offset..].ptr,
             @intCast(bw),
@@ -428,13 +436,13 @@ pub const GlyphAtlas = struct {
     ) TextMetrics {
         const safe_scale = if (std.math.isFinite(scale) and scale > 0.0) scale else 1.0;
         const q = quantizeSizePx(font_size_logical, safe_scale);
-        const stb_scale_px = c.stbtt_ScaleForPixelHeight(&self.font, q.px);
+        const stb_scale_px = huey_stbtt_scale_for_pixel_height(&self.font, q.px);
         const inv_scale = 1.0 / safe_scale;
 
         var asc_i: c_int = 0;
         var desc_i: c_int = 0;
         var gap_i: c_int = 0;
-        c.stbtt_GetFontVMetrics(&self.font, &asc_i, &desc_i, &gap_i);
+        huey_stbtt_get_font_vmetrics(&self.font, &asc_i, &desc_i, &gap_i);
 
         const ascent = @as(f32, @floatFromInt(asc_i)) * stb_scale_px * inv_scale;
         const descent = @as(f32, @floatFromInt(desc_i)) * stb_scale_px * inv_scale;
@@ -446,12 +454,12 @@ pub const GlyphAtlas = struct {
         while (idx < text.len) {
             const cp = nextUtf8Codepoint(text, &idx);
             if (prev_cp) |p| {
-                const kern = c.stbtt_GetCodepointKernAdvance(&self.font, @intCast(p), @intCast(cp));
+                const kern = huey_stbtt_get_codepoint_kern_advance(&self.font, @intCast(p), @intCast(cp));
                 width_px += @as(f32, @floatFromInt(kern)) * stb_scale_px;
             }
             var adv_w: c_int = 0;
             var lsb: c_int = 0;
-            c.stbtt_GetCodepointHMetrics(&self.font, @intCast(cp), &adv_w, &lsb);
+            huey_stbtt_get_codepoint_hmetrics(&self.font, @intCast(cp), &adv_w, &lsb);
             width_px += @as(f32, @floatFromInt(adv_w)) * stb_scale_px;
             prev_cp = cp;
         }
@@ -508,12 +516,12 @@ pub const GlyphAtlas = struct {
         if (!(active_clip[2] > active_clip[0] and active_clip[3] > active_clip[1])) return 0;
 
         const q = quantizeSizePx(font_size_logical, scale);
-        const stb_scale_px = c.stbtt_ScaleForPixelHeight(&self.font, q.px);
+        const stb_scale_px = huey_stbtt_scale_for_pixel_height(&self.font, q.px);
 
         var asc_i: c_int = 0;
         var desc_i: c_int = 0;
         var gap_i: c_int = 0;
-        c.stbtt_GetFontVMetrics(&self.font, &asc_i, &desc_i, &gap_i);
+        huey_stbtt_get_font_vmetrics(&self.font, &asc_i, &desc_i, &gap_i);
         const ascent_px = @as(f32, @floatFromInt(asc_i)) * stb_scale_px;
 
         var pen_x_px = logical_x * scale;
@@ -525,20 +533,20 @@ pub const GlyphAtlas = struct {
         while (idx < text.len and emitted < out_buf.len) {
             const cp = nextUtf8Codepoint(text, &idx);
             if (prev_cp) |p| {
-                const kern = c.stbtt_GetCodepointKernAdvance(&self.font, @intCast(p), @intCast(cp));
+                const kern = huey_stbtt_get_codepoint_kern_advance(&self.font, @intCast(p), @intCast(cp));
                 pen_x_px += @as(f32, @floatFromInt(kern)) * stb_scale_px;
             }
 
             var adv_w: c_int = 0;
             var lsb: c_int = 0;
-            c.stbtt_GetCodepointHMetrics(&self.font, @intCast(cp), &adv_w, &lsb);
+            huey_stbtt_get_codepoint_hmetrics(&self.font, @intCast(cp), &adv_w, &lsb);
             const advance_px = @as(f32, @floatFromInt(adv_w)) * stb_scale_px;
 
             var ix0: c_int = 0;
             var iy0: c_int = 0;
             var ix1: c_int = 0;
             var iy1: c_int = 0;
-            c.stbtt_GetCodepointBitmapBox(&self.font, @intCast(cp), stb_scale_px, stb_scale_px, &ix0, &iy0, &ix1, &iy1);
+            huey_stbtt_get_codepoint_bitmap_box(&self.font, @intCast(cp), stb_scale_px, stb_scale_px, &ix0, &iy0, &ix1, &iy1);
             const bw_i = ix1 - ix0;
             const bh_i = iy1 - iy0;
             if (bw_i <= 0 or bh_i <= 0) {

@@ -5,7 +5,7 @@ const events = @import("events.zig");
 const aq = @import("async_queue.zig");
 const wl = @import("wayland.zig");
 
-const native_endian = builtin.cpu.arch.endian();
+const native_endian = builtin.target.cpu.arch.endian();
 
 test "Wayland wire codec encodes and decodes messages (header, strings, fixed 24.8, arrays) accurately" {
     var buf: [256]u8 = undefined;
@@ -79,19 +79,19 @@ test "WireDecoder rejects truncated, unaligned, and malformed string messages" {
     try std.testing.expectError(error.InvalidMessageSize, wl.WireDecoder.init(&bad_size));
 
     // Size > buffer length (truncated message)
-    var trunc_msg: [12]u8 = [_]u8{0} ** 12;
+    var trunc_msg: [12]u8 = @splat(0);
     std.mem.writeInt(u32, trunc_msg[0..4], 1, native_endian);
     std.mem.writeInt(u32, trunc_msg[4..8], (@as(u32, 16) << 16) | 0, native_endian);
     try std.testing.expectError(error.TruncatedMessage, wl.WireDecoder.init(&trunc_msg));
 
     // Unaligned message size (not a multiple of 4)
-    var unaligned_msg: [16]u8 = [_]u8{0} ** 16;
+    var unaligned_msg: [16]u8 = @splat(0);
     std.mem.writeInt(u32, unaligned_msg[0..4], 1, native_endian);
     std.mem.writeInt(u32, unaligned_msg[4..8], (@as(u32, 10) << 16) | 0, native_endian);
     try std.testing.expectError(error.UnalignedMessageSize, wl.WireDecoder.init(&unaligned_msg));
 
     // String with length == 0 (Wayland strings must include trailing NUL, so len >= 1)
-    var zero_str: [12]u8 = [_]u8{0} ** 12;
+    var zero_str: [12]u8 = @splat(0);
     std.mem.writeInt(u32, zero_str[0..4], 1, native_endian);
     std.mem.writeInt(u32, zero_str[4..8], (@as(u32, 12) << 16) | 0, native_endian);
     std.mem.writeInt(u32, zero_str[8..12], 0, native_endian);
@@ -99,7 +99,7 @@ test "WireDecoder rejects truncated, unaligned, and malformed string messages" {
     try std.testing.expectError(error.InvalidStringLength, dec_zero.readString());
 
     // String missing NUL terminator
-    var nonul_str: [16]u8 = [_]u8{0} ** 16;
+    var nonul_str: [16]u8 = @splat(0);
     std.mem.writeInt(u32, nonul_str[0..4], 1, native_endian);
     std.mem.writeInt(u32, nonul_str[4..8], (@as(u32, 16) << 16) | 0, native_endian);
     std.mem.writeInt(u32, nonul_str[8..12], 4, native_endian);
@@ -108,7 +108,7 @@ test "WireDecoder rejects truncated, unaligned, and malformed string messages" {
     try std.testing.expectError(error.MissingNulTerminator, dec_nonul.readString());
 
     // String length exceeding message payload bounds (including 4-byte padding)
-    var over_str: [16]u8 = [_]u8{0} ** 16;
+    var over_str: [16]u8 = @splat(0);
     std.mem.writeInt(u32, over_str[0..4], 1, native_endian);
     std.mem.writeInt(u32, over_str[4..8], (@as(u32, 16) << 16) | 0, native_endian);
     std.mem.writeInt(u32, over_str[8..12], 6, native_endian);
@@ -117,7 +117,7 @@ test "WireDecoder rejects truncated, unaligned, and malformed string messages" {
     try std.testing.expectError(error.TruncatedString, dec_over.readString());
 
     // Huge string length (0xFFFFFFFF) must not overflow alignForward
-    var huge_str: [16]u8 = [_]u8{0} ** 16;
+    var huge_str: [16]u8 = @splat(0);
     std.mem.writeInt(u32, huge_str[0..4], 1, native_endian);
     std.mem.writeInt(u32, huge_str[4..8], (@as(u32, 16) << 16) | 0, native_endian);
     std.mem.writeInt(u32, huge_str[8..12], 0xFFFF_FFFF, native_endian);
@@ -312,7 +312,7 @@ test "createLayerSurface and handleLayerConfigure write real Wayland wire frames
             try std.testing.expectEqual(surf.layer_surface_id, new_layer_id);
             try std.testing.expectEqual(surf.surface_id, surf_id);
             try std.testing.expectEqual(@as(u32, 0), out_id);
-            try std.testing.expectEqual(@as(u32, @intFromEnum(wl.Layer.top)), layer_val);
+            try std.testing.expectEqual(@as(u32, @backingInt(wl.Layer.top)), layer_val);
             try std.testing.expectEqualStrings("stratifi-panel", ns);
             saw_get_layer_surface = true;
         } else if (dec.object_id == surf.layer_surface_id and dec.opcode == 6) {
@@ -613,7 +613,7 @@ test "C3 & C4: double deinit is idempotent and connect() cleans up fd cleanly on
     const srv_fd: i32 = @intCast(srv_rc);
     defer _ = linux.close(srv_fd);
 
-    var addr = linux.sockaddr.un{ .family = linux.AF.UNIX, .path = [_]u8{0} ** 108 };
+    var addr = linux.sockaddr.un{ .family = linux.AF.UNIX, .path = @splat(0) };
     @memcpy(addr.path[0..sock_path.len], sock_path);
     const addr_len: linux.socklen_t = @intCast(@offsetOf(linux.sockaddr.un, "path") + sock_path.len + 1);
     try std.testing.expectEqual(linux.E.SUCCESS, linux.errno(linux.bind(srv_fd, @ptrCast(&addr), addr_len)));
@@ -915,7 +915,7 @@ test "M11-M13 & L15: surface pre-validation, output sanitization, socket path va
 
     // WireDecoder.readString embedded NUL rejection
     {
-        var raw_str: [16]u8 = [_]u8{0} ** 16;
+        var raw_str: [16]u8 = @splat(0);
         std.mem.writeInt(u32, raw_str[0..4], 1, native_endian);
         std.mem.writeInt(u32, raw_str[4..8], (@as(u32, 16) << 16) | 0, native_endian);
         std.mem.writeInt(u32, raw_str[8..12], 4, native_endian);

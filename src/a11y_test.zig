@@ -354,7 +354,7 @@ test "A11yTree announcement ring handles alias safety, invalid UTF-8, overflow, 
 
     // Temporary heap-allocated strings can be freed immediately after announce()
     {
-        const tmp = try std.fmt.allocPrint(std.testing.allocator, "Saved #{d}", .{42});
+        const tmp = try std.testing.allocator.print("Saved #{d}", .{42});
         defer std.testing.allocator.free(tmp);
         try tree.announce(tmp, .assertive);
     }

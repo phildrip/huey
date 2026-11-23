@@ -59,23 +59,23 @@ test "Primitives H1/L6: ToastQueue UTF-8 codepoint-boundary truncation, FIFO evi
     try std.testing.expect(tq.top() == null);
 
     // 63 ASCII + "€" (3 bytes = 66 bytes total) must truncate at 63 bytes without splitting "€"
-    const msg_63_euro = ("a" ** 63) ++ "€";
+    const msg_63_euro = &(@as([63]u8, @splat('a')) ++ "€".*);
     tq.push(msg_63_euro, .info, 10.0);
     try std.testing.expectEqual(@as(usize, 1), tq.activeCount());
     const truncated = tq.top().?.message();
     try std.testing.expectEqual(@as(usize, 63), truncated.len);
     try std.testing.expect(std.unicode.utf8ValidateSlice(truncated));
-    try std.testing.expectEqualStrings("a" ** 63, truncated);
+    try std.testing.expectEqualStrings(&@as([63]u8, @splat('a')), truncated);
 
     // 61 ASCII + "€" + "!" (65 bytes) fits "€" completely at 64 bytes
-    const msg_61_euro_bang = ("b" ** 61) ++ "€!";
+    const msg_61_euro_bang = &(@as([61]u8, @splat('b')) ++ "€!".*);
     tq.push(msg_61_euro_bang, .success, 10.0);
     try std.testing.expectEqual(@as(usize, 64), tq.top().?.message().len);
     try std.testing.expect(std.unicode.utf8ValidateSlice(tq.top().?.message()));
-    try std.testing.expectEqualStrings(("b" ** 61) ++ "€", tq.top().?.message());
+    try std.testing.expectEqualStrings(&(@as([61]u8, @splat('b')) ++ "€".*), tq.top().?.message());
 
     // 61 ASCII + 4-byte emoji (65 bytes) must not split the 4-byte codepoint
-    const msg_61_emoji = ("c" ** 61) ++ "😀";
+    const msg_61_emoji = &(@as([61]u8, @splat('c')) ++ "😀".*);
     tq.push(msg_61_emoji, .warning, 10.0);
     try std.testing.expectEqual(@as(usize, 61), tq.top().?.message().len);
     try std.testing.expect(std.unicode.utf8ValidateSlice(tq.top().?.message()));

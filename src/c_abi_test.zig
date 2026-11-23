@@ -1,8 +1,5 @@
 const std = @import("std");
 const c_abi = @import("c_abi.zig");
-const c_hdr = @cImport({
-    @cInclude("huey.h");
-});
 
 test "Flat C ABI lifecycle: create, build widgets, layout, inject touch, poll UiEvent, destroy" {
     const ctx = c_abi.huey_create(400.0, 400.0, 2.0) orelse return error.CreateFailed;
@@ -219,38 +216,38 @@ test "C ABI huey_reset invalidates old u32 handles and clears queued events" {
     try std.testing.expectEqual(@as(u32, 1), ev.mods);
 }
 
-test "C header @cImport parity: HueyRect, HueyQuad, HueyEvent size, align, and offsets" {
-    try std.testing.expectEqual(@sizeOf(c_abi.HueyRect), @sizeOf(c_hdr.HueyRect));
-    try std.testing.expectEqual(@alignOf(c_abi.HueyRect), @alignOf(c_hdr.HueyRect));
-    try std.testing.expectEqual(@offsetOf(c_abi.HueyRect, "x"), @offsetOf(c_hdr.HueyRect, "x"));
-    try std.testing.expectEqual(@offsetOf(c_abi.HueyRect, "y"), @offsetOf(c_hdr.HueyRect, "y"));
-    try std.testing.expectEqual(@offsetOf(c_abi.HueyRect, "w"), @offsetOf(c_hdr.HueyRect, "w"));
-    try std.testing.expectEqual(@offsetOf(c_abi.HueyRect, "h"), @offsetOf(c_hdr.HueyRect, "h"));
+test "C header ABI parity: HueyRect, HueyQuad, HueyEvent size, align, and offsets" {
+    try std.testing.expectEqual(@as(usize, 16), @sizeOf(c_abi.HueyRect));
+    try std.testing.expectEqual(@as(usize, 4), @alignOf(c_abi.HueyRect));
+    try std.testing.expectEqual(@as(usize, 0), @offsetOf(c_abi.HueyRect, "x"));
+    try std.testing.expectEqual(@as(usize, 4), @offsetOf(c_abi.HueyRect, "y"));
+    try std.testing.expectEqual(@as(usize, 8), @offsetOf(c_abi.HueyRect, "w"));
+    try std.testing.expectEqual(@as(usize, 12), @offsetOf(c_abi.HueyRect, "h"));
 
-    try std.testing.expectEqual(@sizeOf(c_abi.HueyQuad), @sizeOf(c_hdr.HueyQuad));
-    try std.testing.expectEqual(@alignOf(c_abi.HueyQuad), @alignOf(c_hdr.HueyQuad));
-    try std.testing.expectEqual(@offsetOf(c_abi.HueyQuad, "pos_size"), @offsetOf(c_hdr.HueyQuad, "pos_size"));
-    try std.testing.expectEqual(@offsetOf(c_abi.HueyQuad, "uv_rect"), @offsetOf(c_hdr.HueyQuad, "uv_rect"));
-    try std.testing.expectEqual(@offsetOf(c_abi.HueyQuad, "color"), @offsetOf(c_hdr.HueyQuad, "color"));
-    try std.testing.expectEqual(@offsetOf(c_abi.HueyQuad, "border_color"), @offsetOf(c_hdr.HueyQuad, "border_color"));
-    try std.testing.expectEqual(@offsetOf(c_abi.HueyQuad, "params"), @offsetOf(c_hdr.HueyQuad, "params"));
-    try std.testing.expectEqual(@offsetOf(c_abi.HueyQuad, "clip_rect"), @offsetOf(c_hdr.HueyQuad, "clip_rect"));
+    try std.testing.expectEqual(@as(usize, 96), @sizeOf(c_abi.HueyQuad));
+    try std.testing.expectEqual(@as(usize, 4), @alignOf(c_abi.HueyQuad));
+    try std.testing.expectEqual(@as(usize, 0), @offsetOf(c_abi.HueyQuad, "pos_size"));
+    try std.testing.expectEqual(@as(usize, 16), @offsetOf(c_abi.HueyQuad, "uv_rect"));
+    try std.testing.expectEqual(@as(usize, 32), @offsetOf(c_abi.HueyQuad, "color"));
+    try std.testing.expectEqual(@as(usize, 48), @offsetOf(c_abi.HueyQuad, "border_color"));
+    try std.testing.expectEqual(@as(usize, 64), @offsetOf(c_abi.HueyQuad, "params"));
+    try std.testing.expectEqual(@as(usize, 80), @offsetOf(c_abi.HueyQuad, "clip_rect"));
 
-    try std.testing.expectEqual(@sizeOf(c_abi.HueyEvent), @sizeOf(c_hdr.HueyEvent));
-    try std.testing.expectEqual(@alignOf(c_abi.HueyEvent), @alignOf(c_hdr.HueyEvent));
-    try std.testing.expectEqual(@sizeOf(c_abi.HueyEventKind), @sizeOf(c_hdr.HueyEventKind));
-    try std.testing.expectEqual(@offsetOf(c_abi.HueyEvent, "kind"), @offsetOf(c_hdr.HueyEvent, "kind"));
-    try std.testing.expectEqual(@offsetOf(c_abi.HueyEvent, "node_id"), @offsetOf(c_hdr.HueyEvent, "node_id"));
-    try std.testing.expectEqual(@offsetOf(c_abi.HueyEvent, "bool_val"), @offsetOf(c_hdr.HueyEvent, "bool_val"));
-    try std.testing.expectEqual(@offsetOf(c_abi.HueyEvent, "_pad0"), @offsetOf(c_hdr.HueyEvent, "_pad0"));
-    try std.testing.expectEqual(@offsetOf(c_abi.HueyEvent, "f32_val"), @offsetOf(c_hdr.HueyEvent, "f32_val"));
-    try std.testing.expectEqual(@offsetOf(c_abi.HueyEvent, "dx"), @offsetOf(c_hdr.HueyEvent, "dx"));
-    try std.testing.expectEqual(@offsetOf(c_abi.HueyEvent, "dy"), @offsetOf(c_hdr.HueyEvent, "dy"));
-    try std.testing.expectEqual(@offsetOf(c_abi.HueyEvent, "key"), @offsetOf(c_hdr.HueyEvent, "key"));
-    try std.testing.expectEqual(@offsetOf(c_abi.HueyEvent, "mods"), @offsetOf(c_hdr.HueyEvent, "mods"));
-    try std.testing.expectEqual(@offsetOf(c_abi.HueyEvent, "codepoint"), @offsetOf(c_hdr.HueyEvent, "codepoint"));
-    try std.testing.expectEqual(@offsetOf(c_abi.HueyEvent, "test_id"), @offsetOf(c_hdr.HueyEvent, "test_id"));
-    try std.testing.expectEqual(@offsetOf(c_abi.HueyEvent, "test_id_len"), @offsetOf(c_hdr.HueyEvent, "test_id_len"));
+    try std.testing.expectEqual(@as(usize, 104), @sizeOf(c_abi.HueyEvent));
+    try std.testing.expectEqual(@as(usize, 4), @alignOf(c_abi.HueyEvent));
+    try std.testing.expectEqual(@as(usize, 4), @sizeOf(c_abi.HueyEventKind));
+    try std.testing.expectEqual(@as(usize, 0), @offsetOf(c_abi.HueyEvent, "kind"));
+    try std.testing.expectEqual(@as(usize, 4), @offsetOf(c_abi.HueyEvent, "node_id"));
+    try std.testing.expectEqual(@as(usize, 8), @offsetOf(c_abi.HueyEvent, "bool_val"));
+    try std.testing.expectEqual(@as(usize, 9), @offsetOf(c_abi.HueyEvent, "_pad0"));
+    try std.testing.expectEqual(@as(usize, 12), @offsetOf(c_abi.HueyEvent, "f32_val"));
+    try std.testing.expectEqual(@as(usize, 16), @offsetOf(c_abi.HueyEvent, "dx"));
+    try std.testing.expectEqual(@as(usize, 20), @offsetOf(c_abi.HueyEvent, "dy"));
+    try std.testing.expectEqual(@as(usize, 24), @offsetOf(c_abi.HueyEvent, "key"));
+    try std.testing.expectEqual(@as(usize, 28), @offsetOf(c_abi.HueyEvent, "mods"));
+    try std.testing.expectEqual(@as(usize, 32), @offsetOf(c_abi.HueyEvent, "codepoint"));
+    try std.testing.expectEqual(@as(usize, 36), @offsetOf(c_abi.HueyEvent, "test_id"));
+    try std.testing.expectEqual(@as(usize, 100), @offsetOf(c_abi.HueyEvent, "test_id_len"));
 }
 
 test "C ABI rejects second root when root already exists" {

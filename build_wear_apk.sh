@@ -40,10 +40,11 @@ mkdir -p "$APK_STAGING/lib/armeabi-v7a"
 cat > "$BUILD_DIR/android-wear-libc.txt" <<EOF
 include_dir=$SYSROOT_INC
 sys_include_dir=$TARGET_INC
+cc_dir=$NDK_LIBS
 crt_dir=$NDK_LIBS
 msvc_lib_dir=
 kernel32_lib_dir=
-gcc_dir=
+darwin_sdk_dir=
 EOF
 
 echo "[1/5] Compiling libhuey.so (arm-linux-androideabi.24, ReleaseSmall)..."

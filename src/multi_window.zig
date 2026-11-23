@@ -7,7 +7,7 @@ pub const SCALE_EPSILON: f32 = 0.001;
 
 pub const OutputState = struct {
     id: u32,
-    name: [32]u8 = .{0} ** 32,
+    name: [32]u8 = @splat(0),
     name_len: u8 = 0,
     logical_x: i32 = 0,
     logical_y: i32 = 0,

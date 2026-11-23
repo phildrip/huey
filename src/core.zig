@@ -1082,7 +1082,7 @@ pub const LayoutArena = struct {
         cols: u16,
         col: u16 = 0,
         row: usize = 0,
-        busy: [MAX_GRID_COLS]u16 = [_]u16{0} ** MAX_GRID_COLS,
+        busy: [MAX_GRID_COLS]u16 = @splat(0),
 
         fn nextRow(self: *GridCursor) void {
             self.row += 1;

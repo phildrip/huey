@@ -284,7 +284,7 @@ pub const TokenTable = extern struct {
 };
 
 // Kernel `struct stat` matching Linux ABI for `fstat`/`fstatat64` (works on Linux 3.10+ / Android API 24+).
-const KernelStat = switch (builtin.cpu.arch) {
+const KernelStat = switch (builtin.target.cpu.arch) {
     .x86_64 => extern struct {
         dev: u64,
         ino: u64,
@@ -340,8 +340,9 @@ fn linuxFstat(fd: i32, st: *KernelStat) linux.E {
 }
 
 fn linuxFstatat(dirfd: i32, path: [*:0]const u8, st: *KernelStat, flags: u32) linux.E {
+    const sys: linux.SYS = if (@hasField(linux.SYS, "fstatat64")) .fstatat64 else .newfstatat;
     while (true) {
-        const rc = linux.syscall4(.fstatat64, @as(usize, @bitCast(@as(isize, dirfd))), @intFromPtr(path), @intFromPtr(st), flags);
+        const rc = linux.syscall4(sys, @as(usize, @bitCast(@as(isize, dirfd))), @intFromPtr(path), @intFromPtr(st), flags);
         const err = linux.errno(rc);
         if (err == .INTR) continue;
         return err;

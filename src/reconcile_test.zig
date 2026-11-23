@@ -159,7 +159,7 @@ test "deriveIndexKey produces distinct deterministic non-zero keys" {
     }
 
     // Index key does not trivially collide with local_id string or raw little-endian bytes.
-    const raw_zero = [_]u8{0} ** 8;
+    const raw_zero: [8]u8 = @splat(0);
     try std.testing.expect(reconcile.deriveIndexKey(p1, 0) != reconcile.deriveKey(p1, &raw_zero));
     try std.testing.expect(reconcile.deriveIndexKey(p1, 0) != reconcile.deriveKey(p1, "0"));
 }
@@ -322,4 +322,3 @@ test "struct replacement on RetainedState pointer does not cause premature GC" {
     try std.testing.expectEqual(@as(usize, 1), store.count());
     try std.testing.expectEqual(@as(f32, 99.0), store.get(k).?.scroll_y);
 }
-

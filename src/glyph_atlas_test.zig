@@ -141,7 +141,7 @@ test "GlyphAtlas rejects malformed, truncated, and oversized-dimension inputs cl
     try std.testing.expectError(error.InvalidFont, glyph_atlas.GlyphAtlas.init(std.testing.allocator, "abc", 64, 64));
 
     // Valid SFNT header claiming 1 table whose offset/length exceeds buffer
-    var bad_sfnt = [_]u8{0} ** 32;
+    var bad_sfnt: [32]u8 = @splat(0);
     bad_sfnt[0] = 0x00;
     bad_sfnt[1] = 0x01;
     bad_sfnt[2] = 0x00;

@@ -378,7 +378,7 @@ test "M8 & L9-L12: WireEncoder open-message guard, rollback, object IDs, _pad ma
     try std.testing.expectEqual(saved_pos, enc.pos);
     try std.testing.expectEqual(saved_start, enc.msg_start);
     try std.testing.expectEqual(saved_open, enc.msg_open);
-    try std.testing.expectEqual(@as(u32, 0x11223344), std.mem.readInt(u32, buf[8..12], builtin.cpu.arch.endian()));
+    try std.testing.expectEqual(@as(u32, 0x11223344), std.mem.readInt(u32, buf[8..12], builtin.target.cpu.arch.endian()));
 
     // L9: BufferTooSmall rollback at lengths 0, 64, 91
     const rollback_lens = [_]usize{ 0, 64, 91 };

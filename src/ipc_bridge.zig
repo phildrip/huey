@@ -11,7 +11,7 @@ const MAX_IDLE_POLLS: u32 = 64;
 const MAX_CLIENT_PUMPS: usize = 128;
 
 // Kernel `struct stat` matching Linux ABI for `fstatat64` (Linux 3.10+ / Android API 24+).
-const KernelStat = switch (builtin.cpu.arch) {
+const KernelStat = switch (builtin.target.cpu.arch) {
     .x86_64 => extern struct {
         dev: u64,
         ino: u64,
@@ -64,9 +64,10 @@ const Ucred = extern struct {
 };
 
 fn linuxFstatat(dirfd: i32, path: [*:0]const u8, st: *KernelStat, flags: u32) linux.E {
+    const sys: linux.SYS = if (@hasField(linux.SYS, "fstatat64")) .fstatat64 else .newfstatat;
     while (true) {
         const rc = linux.syscall4(
-            .fstatat64,
+            sys,
             @as(usize, @bitCast(@as(isize, dirfd))),
             @intFromPtr(path),
             @intFromPtr(st),
@@ -258,7 +259,7 @@ fn validateUnixPath(path: [*:0]const u8) ![]const u8 {
 fn initUnixAddr(path_slice: []const u8) struct { addr: linux.sockaddr.un, len: linux.socklen_t } {
     var addr: linux.sockaddr.un = .{
         .family = linux.AF.UNIX,
-        .path = [_]u8{0} ** 108,
+        .path = @splat(0),
     };
     @memcpy(addr.path[0..path_slice.len], path_slice);
     const len: linux.socklen_t = @intCast(@offsetOf(linux.sockaddr.un, "path") + path_slice.len + 1);
@@ -333,10 +334,10 @@ fn beginJsonResponse(
 /// Non-blocking `AF_UNIX` `SOCK_STREAM` server for local NDJSON inspection and control.
 pub const IpcServer = struct {
     fd: i32 = -1,
-    path_buf: [108]u8 = [_]u8{0} ** 108,
+    path_buf: [108]u8 = @splat(0),
     path_len: usize = 0,
     allocator: std.mem.Allocator,
-    clients: [MAX_CLIENTS]ClientSlot = [_]ClientSlot{.{}} ** MAX_CLIENTS,
+    clients: [MAX_CLIENTS]ClientSlot = @splat(.{}),
 
     pub fn bind(allocator: std.mem.Allocator, path: [*:0]const u8) !IpcServer {
         const path_slice = try validateUnixPath(path);
@@ -399,7 +400,7 @@ pub const IpcServer = struct {
 
         var srv = IpcServer{
             .fd = fd,
-            .path_buf = [_]u8{0} ** 108,
+            .path_buf = @splat(0),
             .path_len = path_slice.len,
             .allocator = allocator,
         };

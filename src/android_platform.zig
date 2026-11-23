@@ -1,7 +1,7 @@
 const std = @import("std");
 const builtin = @import("builtin");
 
-pub const is_android: bool = builtin.abi.isAndroid();
+pub const is_android: bool = builtin.target.abi.isAndroid();
 
 /// Haptic feedback kinds mapped to bounded durations and pulse patterns.
 pub const HapticKind = enum {
@@ -783,4 +783,3 @@ test "android_platform: full keycode, haptic, state, and host no-op bridge cover
         try std.testing.expect(!vib_fn(ptr, .tap));
     }
 }
-

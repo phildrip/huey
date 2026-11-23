@@ -470,7 +470,7 @@ pub export fn huey_poll_event(ctx: ?*HueyContext, out_ev: ?*HueyEvent) callconv(
         .key = 0,
         .mods = 0,
         .codepoint = 0,
-        .test_id = [_]u8{0} ** 64,
+        .test_id = @splat(0),
         .test_id_len = 0,
     };
 

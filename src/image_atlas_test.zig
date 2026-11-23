@@ -80,8 +80,8 @@ test "ImageAtlas InvalidImageData on wrong rgba.len or zero dimensions" {
     defer atlas.deinit();
 
     const k = ia.IconKey{ .id_hash = 42, .size_px = 8 };
-    const short_buf = [_]u8{0xFF} ** (8 * 8 * 4 - 1);
-    const long_buf = [_]u8{0xFF} ** (8 * 8 * 4 + 4);
+    const short_buf: [8 * 8 * 4 - 1]u8 = @splat(0xFF);
+    const long_buf: [8 * 8 * 4 + 4]u8 = @splat(0xFF);
 
     try std.testing.expectError(error.InvalidImageData, atlas.insertRgba(k, 8, 8, &short_buf, 1));
     try std.testing.expectError(error.InvalidImageData, atlas.insertRgba(k, 8, 8, &long_buf, 1));
@@ -386,4 +386,3 @@ test "ImageAtlas getOrRasterizeIcon rejects size_logical == 0, clamps 1e35 to 25
         try std.testing.expect(any_alpha);
     }
 }
-

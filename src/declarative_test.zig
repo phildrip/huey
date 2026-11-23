@@ -424,7 +424,7 @@ test "Exact MAX_NESTING_DEPTH boundary, MAX_JSON_BYTES, and MAX_STRING_LEN enfor
     const max_str = try std.testing.allocator.alloc(u8, decl.MAX_STRING_LEN);
     defer std.testing.allocator.free(max_str);
     @memset(max_str, 'a');
-    const ok_str_json = try std.fmt.allocPrint(std.testing.allocator, "{{\"type\":\"card\",\"label\":\"{s}\"}}", .{max_str});
+    const ok_str_json = try std.testing.allocator.print("{{\"type\":\"card\",\"label\":\"{s}\"}}", .{max_str});
     defer std.testing.allocator.free(ok_str_json);
     const ok_str_res = try decl.loadJsonIntoArena(
         std.testing.allocator,
@@ -438,7 +438,7 @@ test "Exact MAX_NESTING_DEPTH boundary, MAX_JSON_BYTES, and MAX_STRING_LEN enfor
     const over_str = try std.testing.allocator.alloc(u8, decl.MAX_STRING_LEN + 1);
     defer std.testing.allocator.free(over_str);
     @memset(over_str, 'a');
-    const bad_str_json = try std.fmt.allocPrint(std.testing.allocator, "{{\"type\":\"card\",\"label\":\"{s}\"}}", .{over_str});
+    const bad_str_json = try std.testing.allocator.print("{{\"type\":\"card\",\"label\":\"{s}\"}}", .{over_str});
     defer std.testing.allocator.free(bad_str_json);
     try std.testing.expectError(error.InvalidFieldType, decl.loadJsonIntoArena(
         std.testing.allocator,

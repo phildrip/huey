@@ -42,7 +42,7 @@ Read the full version in [`docs/MANIFESTO_v2.2.md`](docs/MANIFESTO_v2.2.md) and 
 
 ## Quick Start
 
-Requires **Zig 0.16.0** (plus Android SDK/NDK for mobile/watch builds).
+Requires **Zig 0.17.1** (plus Android SDK/NDK for mobile/watch builds).
 
 ```bash
 # Run all 35 host unit test suites

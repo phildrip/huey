@@ -55,7 +55,7 @@ pub const HoldToConfirm = struct {
     fired_count: u32 = 0,
     burst_timer_s: f32 = 0.0,
     completed_this_press: bool = false,
-    sparks: [MAX_SPARKS]Spark = [_]Spark{.{}} ** MAX_SPARKS,
+    sparks: [MAX_SPARKS]Spark = @splat(.{}),
     rng_state: u32 = 0x9E3779B9,
     spawn_accum_s: f32 = 0.0,
 

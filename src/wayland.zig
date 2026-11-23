@@ -3,7 +3,7 @@ const builtin = @import("builtin");
 const linux = std.os.linux;
 const events = @import("events.zig");
 
-const native_endian = builtin.cpu.arch.endian();
+const native_endian = builtin.target.cpu.arch.endian();
 
 pub const MAX_WIRE_MSG_SIZE: usize = 65532;
 pub const RECV_BUF_SIZE: usize = 65536;
@@ -445,7 +445,7 @@ pub const EpollLoop = struct {
 fn initUnixAddr(path_slice: []const u8) struct { addr: linux.sockaddr.un, len: linux.socklen_t } {
     var addr: linux.sockaddr.un = .{
         .family = linux.AF.UNIX,
-        .path = [_]u8{0} ** 108,
+        .path = @splat(0),
     };
     @memcpy(addr.path[0..path_slice.len], path_slice);
     const len: linux.socklen_t = @intCast(@offsetOf(linux.sockaddr.un, "path") + path_slice.len + 1);
@@ -949,7 +949,7 @@ pub const WaylandClient = struct {
             try enc.writeU32(layer_surface_id);
             try enc.writeU32(surface_id);
             try enc.writeU32(0); // output = NULL (compositor picks active output)
-            try enc.writeU32(@intFromEnum(desc.layer));
+            try enc.writeU32(@backingInt(desc.layer));
             try enc.writeString(desc.namespace);
             try self.sendWireMsg(try enc.finish(
                 self.layer_shell_id,

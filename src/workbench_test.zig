@@ -65,7 +65,7 @@ test "Workbench: mmap token file hot-reload updates generation and re-renders" {
     const alloc = std.testing.allocator;
 
     var path_buf: [256]u8 = undefined;
-    const tmp_path = try std.fmt.bufPrintZ(&path_buf, "/tmp/ziggui_wb_test_{d}.tok", .{std.os.linux.getpid()});
+    const tmp_path = try std.fmt.bufPrintSentinel(&path_buf, "/tmp/ziggui_wb_test_{d}.tok", .{std.os.linux.getpid()}, 0);
     defer _ = std.os.linux.unlink(tmp_path.ptr);
 
     var tbl = tokens.TokenTable.nordDefault();
@@ -244,7 +244,7 @@ test "Workbench: double pollTokenReload, error atomicity, embedded NUL path, and
     try std.testing.expectError(error.InvalidViewport, workbench.Workbench.init(alloc, std.math.nan(f32), 100));
 
     var path_buf: [256]u8 = undefined;
-    const tmp_path = try std.fmt.bufPrintZ(&path_buf, "/tmp/ziggui_wb_adv_{d}.tok", .{std.os.linux.getpid()});
+    const tmp_path = try std.fmt.bufPrintSentinel(&path_buf, "/tmp/ziggui_wb_adv_{d}.tok", .{std.os.linux.getpid()}, 0);
     defer _ = std.os.linux.unlink(tmp_path.ptr);
 
     var tbl = tokens.TokenTable.nordDefault();
@@ -300,7 +300,7 @@ test "Workbench: OOM atomicity on loadSceneJson, attachTokenFile, pollTokenReloa
     const alloc = failing.allocator();
 
     var path_buf: [256]u8 = undefined;
-    const tmp_path = try std.fmt.bufPrintZ(&path_buf, "/tmp/ziggui_wb_oom_{d}.tok", .{std.os.linux.getpid()});
+    const tmp_path = try std.fmt.bufPrintSentinel(&path_buf, "/tmp/ziggui_wb_oom_{d}.tok", .{std.os.linux.getpid()}, 0);
     defer _ = std.os.linux.unlink(tmp_path.ptr);
 
     var tbl = tokens.TokenTable.nordDefault();
@@ -347,8 +347,10 @@ test "Workbench: OOM atomicity on loadSceneJson, attachTokenFile, pollTokenReloa
     // Trigger OOM during stepFrame with new large gallery: frame_history & last_quad_count remain consistent
     try wb.loadBuiltinGallery();
     failing.fail_index = failing.alloc_index;
+    failing.resize_fail_index = failing.resize_index;
     try std.testing.expectError(error.OutOfMemory, wb.stepFrame(9_999));
     failing.fail_index = std.math.maxInt(usize);
+    failing.resize_fail_index = std.math.maxInt(usize);
     try std.testing.expectEqual(@as(u32, 1_500), wb.last_frame_us);
     try std.testing.expectEqual(orig_quad_count, wb.last_quad_count);
 }

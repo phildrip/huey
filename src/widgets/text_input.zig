@@ -624,7 +624,7 @@ fn lineColAtOffset(buf: []const u8, offset: usize) LineCol {
 
 /// Zero-allocation fixed-capacity segmented OTP digit input.
 pub const InputOtp = struct {
-    digits: [MAX_OTP]u8 = [_]u8{0} ** MAX_OTP,
+    digits: [MAX_OTP]u8 = @splat(0),
     count: u8 = 0,
     target_len: u8 = 6,
     focused: bool = false,

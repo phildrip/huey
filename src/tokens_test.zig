@@ -101,8 +101,7 @@ test "PseudoState active and checked resolve deterministically across component 
     try std.testing.expect(disabled_focus.fill[3] < base.fill[3]);
 
     // All ComponentKind variants resolve with finite colors and non-negative geometry
-    inline for (std.meta.fields(tokens.ComponentKind)) |field| {
-        const kind: tokens.ComponentKind = @enumFromInt(field.value);
+    inline for (std.meta.tags(tokens.ComponentKind)) |kind| {
         const s = table.resolve(kind, .{});
         try std.testing.expect(s.corner_radius >= 0.0);
         try std.testing.expect(s.border_width >= 0.0);

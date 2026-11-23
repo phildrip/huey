@@ -9,7 +9,7 @@ pub const AsyncMessage = struct {
     tag: u32 = 0,
     u64_val: u64 = 0,
     f32_val: f32 = 0.0,
-    payload: [MAX_PAYLOAD_BYTES]u8 = [_]u8{0} ** MAX_PAYLOAD_BYTES,
+    payload: [MAX_PAYLOAD_BYTES]u8 = @splat(0),
     payload_len: u8 = 0,
 
     /// Returns the active slice of `payload`, clamped to `MAX_PAYLOAD_BYTES`.
