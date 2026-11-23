@@ -45,6 +45,7 @@ pub fn build(b: *std.Build) void {
         .{ .name = "reconcile_test", .path = "src/reconcile_test.zig" },
         .{ .name = "async_queue_test", .path = "src/async_queue_test.zig" },
         .{ .name = "tokens_test", .path = "src/tokens_test.zig" },
+        .{ .name = "theme_test", .path = "src/theme_test.zig" },
         .{ .name = "declarative_test", .path = "src/declarative_test.zig" },
         .{ .name = "text_edit_test", .path = "src/text_edit_test.zig" },
         .{ .name = "a11y_test", .path = "src/a11y_test.zig" },

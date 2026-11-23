@@ -22,6 +22,7 @@ echo "[0/5] Running unit tests (src/core_test.zig, src/glyph_atlas_test.zig, src
 "$ZIG" test "$ROOT_DIR/src/reconcile_test.zig"
 "$ZIG" test "$ROOT_DIR/src/async_queue_test.zig"
 "$ZIG" test "$ROOT_DIR/src/tokens_test.zig"
+"$ZIG" test "$ROOT_DIR/src/theme_test.zig"
 "$ZIG" test "$ROOT_DIR/src/c_abi_test.zig" -I"$ROOT_DIR/include" -lc
 "$ZIG" test "$ROOT_DIR/src/declarative_test.zig"
 "$ZIG" test "$ROOT_DIR/src/text_edit_test.zig"

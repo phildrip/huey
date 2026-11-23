@@ -252,7 +252,16 @@ pub const TokenTable = extern struct {
                 border_ok = self.border_focus;
                 border_width = self.border_width_focus;
             }
-        } else {
+        }
+
+        if ((kind == .button or kind == .toggle) and state.checked) {
+            text_ok = if (fill_ok.l >= 0.58)
+                OklabColor{ .l = 0.14, .a = 0.0, .b = 0.0, .alpha = 1.0 }
+            else
+                OklabColor{ .l = 0.98, .a = 0.0, .b = 0.0, .alpha = 1.0 };
+        }
+
+        if (state.disabled) {
             fill_ok.alpha = std.math.clamp(fill_ok.alpha * 0.55, 0.0, 1.0);
             border_ok.alpha = std.math.clamp(border_ok.alpha * 0.55, 0.0, 1.0);
             accent_ok.alpha = std.math.clamp(accent_ok.alpha * 0.55, 0.0, 1.0);
