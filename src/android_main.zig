@@ -6,6 +6,7 @@ const renderer = @import("renderer.zig");
 const showcase_scene = @import("showcase_scene.zig");
 const virtual_scroll = @import("virtual_scroll.zig");
 const wearos = @import("wearos.zig");
+const android_platform = @import("android_platform.zig");
 
 const IS_WEAR: bool = @hasDecl(@import("root"), "WEAR_MODE") and @import("root").WEAR_MODE;
 const ActiveShowcase = if (IS_WEAR) @import("wear_showcase_scene.zig").WearShowcaseApp else showcase_scene.ShowcaseApp;
@@ -458,6 +459,29 @@ fn isTouchInScrollArea(
     return if (IS_WEAR) true else (py >= 108.0);
 }
 
+fn syncPlatformFeedback(
+    activity: *c.ANativeActivity,
+    kb_state: *android_platform.SoftKeyboardState,
+    showcase: *ActiveShowcase,
+) void {
+    if (@hasField(ActiveShowcase, "want_keyboard")) {
+        if (showcase.want_keyboard) {
+            if (kb_state.requestShow()) {
+                android_platform.AndroidBridge.showSoftInputNative(activity);
+            }
+        } else {
+            if (kb_state.requestHide()) {
+                android_platform.AndroidBridge.hideSoftInputNative(activity);
+            }
+        }
+    }
+    if (@hasDecl(ActiveShowcase, "takePendingHaptic")) {
+        if (showcase.takePendingHaptic()) |h| {
+            _ = android_platform.AndroidBridge.vibrateNative(activity, h);
+        }
+    }
+}
+
 const VsyncState = struct {
     posted: bool = false,
     fired: bool = false,
@@ -547,6 +571,7 @@ fn workerMain(arg: ?*anyopaque) callconv(.c) ?*anyopaque {
     var scroller = virtual_scroll.InertialScroller.init(0.0);
     var rotary = wearos.WearRotaryAdapter.init(36.0);
     var touch_scroll: TouchScrollState = .{};
+    var kb_state = android_platform.SoftKeyboardState.init();
     var vsync: VsyncState = .{};
     var redraw_pending = false;
     var anim_frames: u32 = 0;
@@ -644,6 +669,12 @@ fn workerMain(arg: ?*anyopaque) callconv(.c) ?*anyopaque {
                             touch_scroll.reset();
                             if (@hasDecl(ActiveShowcase, "onWearPointerCancel")) {
                                 showcase.onWearPointerCancel();
+                            }
+                            if (@hasField(ActiveShowcase, "want_keyboard")) {
+                                showcase.want_keyboard = false;
+                            }
+                            if (kb_state.requestHide()) {
+                                android_platform.AndroidBridge.hideSoftInputNative(state.activity);
                             }
                             last_anim_time_s = null;
                             vsync.active = false;
@@ -1199,6 +1230,19 @@ fn workerMain(arg: ?*anyopaque) callconv(.c) ?*anyopaque {
                                 },
                                 else => {},
                             }
+                        } else if (c.AInputEvent_getType(ev) == c.AINPUT_EVENT_TYPE_KEY) {
+                            if (c.AKeyEvent_getAction(ev) == c.AKEY_EVENT_ACTION_DOWN) {
+                                const keycode = c.AKeyEvent_getKeyCode(ev);
+                                const meta = c.AKeyEvent_getMetaState(ev);
+                                const shifted = (meta & c.AMETA_SHIFT_ON) != 0;
+                                if (@hasDecl(ActiveShowcase, "onKeyInput")) {
+                                    if (showcase.onKeyInput(keycode, shifted)) {
+                                        rebuildShowcaseAndSync(&showcase, &arena, &scroller, &router, egl.width, egl.height, scale_factor);
+                                        arena.requestRedraw();
+                                        handled = 1;
+                                    }
+                                }
+                            }
                         }
                         c.AInputQueue_finishEvent(q, ev, handled);
                     }
@@ -1271,6 +1315,7 @@ fn workerMain(arg: ?*anyopaque) callconv(.c) ?*anyopaque {
             rebuildShowcaseAndSync(&showcase, &arena, &scroller, &router, egl.width, egl.height, scale_factor);
             arena.requestRedraw();
         }
+        syncPlatformFeedback(state.activity, &kb_state, &showcase);
 
         const has_surface_now = (window != null and egl.surface != c.EGL_NO_SURFACE and rend.initialized);
         var should_render = false;
@@ -1298,6 +1343,7 @@ fn workerMain(arg: ?*anyopaque) callconv(.c) ?*anyopaque {
                 }
                 if (showcase.isAnimating()) {
                     _ = showcase.stepAnimations(@floatCast(frame_dt_s));
+                    syncPlatformFeedback(state.activity, &kb_state, &showcase);
                     rebuildShowcaseAndSync(&showcase, &arena, &scroller, &router, egl.width, egl.height, scale_factor);
                     arena.requestRedraw();
                 }
@@ -1324,6 +1370,7 @@ fn workerMain(arg: ?*anyopaque) callconv(.c) ?*anyopaque {
                 }
                 if (showcase.isAnimating()) {
                     _ = showcase.stepAnimations(@floatCast(frame_dt_s));
+                    syncPlatformFeedback(state.activity, &kb_state, &showcase);
                     rebuildShowcaseAndSync(&showcase, &arena, &scroller, &router, egl.width, egl.height, scale_factor);
                     arena.requestRedraw();
                 }

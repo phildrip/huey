@@ -5,6 +5,9 @@ const overlay = @import("overlay.zig");
 const wearos = @import("wearos.zig");
 const glyph_atlas = @import("glyph_atlas.zig");
 const showcase = @import("showcase_scene.zig");
+const theme = @import("theme.zig");
+const controls = @import("widgets/controls.zig");
+const android_platform = @import("android_platform.zig");
 
 const HOST_FONT_PATH = "/usr/share/fonts/truetype/dejavu/DejaVuSans.ttf";
 
@@ -55,7 +58,7 @@ fn tapNode(
     return rebuilt;
 }
 
-test "ShowcaseApp init defaults and pinned header + 48dp tabs across all 4 tabs" {
+test "ShowcaseApp init defaults and pinned header + 48dp tabs across all 5 tabs" {
     var app = showcase.ShowcaseApp.init();
     try std.testing.expectEqual(showcase.Tab.scroll, app.active_tab);
     try std.testing.expectEqual(@as(u8, 0), app.accent_idx);
@@ -80,7 +83,7 @@ test "ShowcaseApp init defaults and pinned header + 48dp tabs across all 4 tabs"
     try app.buildScene(&arena, w, h);
     arena.layout(w, h);
 
-    const tab_ids = [_][]const u8{ "tab_scroll", "tab_widgets", "tab_popups", "tab_hud" };
+    const tab_ids = [_][]const u8{ "tab_scroll", "tab_widgets", "tab_kit", "tab_popups", "tab_hud" };
     for (tab_ids) |tid| {
         const nid = arena.findByTestId(tid) orelse return error.MissingTab;
         const rect = arena.getRect(nid).?;
@@ -88,9 +91,12 @@ test "ShowcaseApp init defaults and pinned header + 48dp tabs across all 4 tabs"
         try std.testing.expect(rect.w >= 44.0);
     }
 
-    // Switch through all 4 tabs via pointer events
+    // Switch through all 5 tabs via pointer events
     try std.testing.expect(try tapNode(&app, &arena, &router, "tab_widgets", w, h));
     try std.testing.expectEqual(showcase.Tab.widgets, app.active_tab);
+
+    try std.testing.expect(try tapNode(&app, &arena, &router, "tab_kit", w, h));
+    try std.testing.expectEqual(showcase.Tab.kit, app.active_tab);
 
     try std.testing.expect(try tapNode(&app, &arena, &router, "tab_popups", w, h));
     try std.testing.expectEqual(showcase.Tab.popups, app.active_tab);
@@ -635,14 +641,29 @@ test "ShowcaseApp narrow Wear OS 200x200 and landscape 640x360 layouts + NaN san
     var arena = core.LayoutArena.init(std.testing.allocator);
     defer arena.deinit();
 
-    // 200x200 Wear OS viewport: tabs >= 44dp, no overlaps, wear_bezel fits inside wear_card, counter visible
-    const tabs = [_]showcase.Tab{ .scroll, .widgets, .popups, .hud };
+    // 200x200 narrow & 240x240 Wear OS / 768x1024 tablet viewports: 5 tabs fit cleanly with no overlaps
+    const tabs = [_]showcase.Tab{ .scroll, .widgets, .kit, .popups, .hud };
+    const tab_ids = [_][]const u8{ "tab_scroll", "tab_widgets", "tab_kit", "tab_popups", "tab_hud" };
     for (tabs) |tab| {
         app.active_tab = tab;
         try app.buildScene(&arena, 200.0, 200.0);
         arena.layout(200.0, 200.0);
+        for (tab_ids) |tid| {
+            const tr = arena.getRect(arena.findByTestId(tid).?).?;
+            try std.testing.expect(tr.w >= 36.0);
+            try std.testing.expect(tr.h >= 48.0);
+        }
 
-        const tab_ids = [_][]const u8{ "tab_scroll", "tab_widgets", "tab_popups", "tab_hud" };
+        try app.buildScene(&arena, 240.0, 240.0);
+        arena.layout(240.0, 240.0);
+        for (tab_ids) |tid| {
+            const tr = arena.getRect(arena.findByTestId(tid).?).?;
+            try std.testing.expect(tr.w >= 44.0);
+            try std.testing.expect(tr.h >= 48.0);
+        }
+
+        try app.buildScene(&arena, 768.0, 1024.0);
+        arena.layout(768.0, 1024.0);
         for (tab_ids) |tid| {
             const tr = arena.getRect(arena.findByTestId(tid).?).?;
             try std.testing.expect(tr.w >= 44.0);
@@ -781,6 +802,7 @@ test "ShowcaseApp widgets Wear OS preview: wear_frunk 1.5s hold-to-confirm, 360 
         _ = app.stepAnimations(1.0 / 60.0);
     }
     try std.testing.expect(app.frunk_open);
+    try std.testing.expectEqual(@as(?android_platform.HapticKind, .double_pulse), app.takePendingHaptic());
     try app.buildScene(&arena, w, h);
     arena.layout(w, h);
     try std.testing.expectEqualStrings("FRUNK OPEN!", arena.nodes.items(.label)[arena.findByTestId("wear_status").?.index]);
@@ -826,4 +848,164 @@ test "ShowcaseApp widgets Wear OS preview: wear_frunk 1.5s hold-to-confirm, 360 
         _ = app.stepAnimations(1.0 / 60.0);
     }
     try std.testing.expect(!app.isAnimating());
+}
+
+test "ShowcaseApp Kit tab: theme presets, VIN TextInput + keycodes, controls, toast, haptics & SDF post quads" {
+    const font_bytes = try loadHostFont(std.testing.allocator);
+    defer std.testing.allocator.free(font_bytes);
+    var atlas = try glyph_atlas.GlyphAtlas.init(std.testing.allocator, font_bytes, 512, 512);
+    defer atlas.deinit();
+
+    var app = showcase.ShowcaseApp.init();
+    var arena = core.LayoutArena.init(std.testing.allocator);
+    defer arena.deinit();
+    var router = events.EventRouter.init();
+
+    const w: f32 = 412.0;
+    const h: f32 = 892.0;
+    try app.buildScene(&arena, w, h);
+    arena.layout(w, h);
+
+    try std.testing.expect(try tapNode(&app, &arena, &router, "tab_kit", w, h));
+    try std.testing.expectEqual(showcase.Tab.kit, app.active_tab);
+    var settle: usize = 0;
+    while (app.isAnimating() and settle < 240) : (settle += 1) {
+        _ = app.stepAnimations(1.0 / 60.0);
+    }
+    try std.testing.expect(!app.isAnimating());
+
+    // 1. Switch all 4 theme presets and verify live TokenTable + root/card colors
+    const preset_cases = [_]struct {
+        id: []const u8,
+        preset: theme.ThemePreset,
+    }{
+        .{ .id = "kit_theme_nord_light", .preset = .nord_light },
+        .{ .id = "kit_theme_oled", .preset = .oled_dark },
+        .{ .id = "kit_theme_hc", .preset = .high_contrast_dark },
+        .{ .id = "kit_theme_nord_dark", .preset = .nord_dark },
+    };
+    for (preset_cases) |pc| {
+        try std.testing.expect(try tapNode(&app, &arena, &router, pc.id, w, h));
+        try std.testing.expectEqual(pc.preset, app.theme_preset);
+        try std.testing.expect(app.token_table.isValid());
+        try std.testing.expectEqual(@as(?android_platform.HapticKind, .tap), app.takePendingHaptic());
+        try std.testing.expectEqual(@as(?android_platform.HapticKind, null), app.takePendingHaptic());
+
+        const root_fill = arena.nodes.items(.fill)[arena.findByTestId("showcase.root").?.index];
+        const expected_bg = app.token_table.bg_base.toSrgb();
+        try std.testing.expectApproxEqAbs(expected_bg[0], root_fill[0], 1e-4);
+        try std.testing.expectApproxEqAbs(expected_bg[1], root_fill[1], 1e-4);
+        try std.testing.expectApproxEqAbs(expected_bg[2], root_fill[2], 1e-4);
+    }
+
+    // 2. VIN TextInput: tap focuses & requests soft keyboard, keycodes uppercase + backspace + max 17 + enter blurs
+    try std.testing.expect(!app.vin_focused);
+    try std.testing.expect(!app.want_keyboard);
+    try std.testing.expect(try tapNode(&app, &arena, &router, "kit_vin_box", w, h));
+    try std.testing.expect(app.vin_focused);
+    try std.testing.expect(app.want_keyboard);
+    try std.testing.expect(app.isAnimating());
+    try std.testing.expectEqual(@as(?android_platform.HapticKind, .tap), app.takePendingHaptic());
+
+    // Type lowercase 'a' (AKEYCODE_A = 29), 'b' (30), '1' (8) -> "AB1"
+    try std.testing.expect(app.onKeyInput(29, false));
+    try std.testing.expect(app.onKeyInput(30, false));
+    try std.testing.expect(app.onKeyInput(8, false));
+    try std.testing.expectEqualStrings("AB1", app.vin_buf[0..app.vin_len]);
+
+    // Backspace (AKEYCODE_DEL = 67) -> "AB"
+    try std.testing.expect(app.onKeyInput(67, false));
+    try std.testing.expectEqualStrings("AB", app.vin_buf[0..app.vin_len]);
+
+    // Type 20 more chars -> clamps at 17
+    for (0..20) |_| {
+        _ = app.onKeyInput(31, false); // 'C'
+    }
+    try std.testing.expectEqual(@as(usize, 17), app.vin_len);
+    try std.testing.expect(!app.onKeyInput(31, false));
+
+    // Enter (AKEYCODE_ENTER = 66) blurs & hides keyboard + emits confirm haptic
+    try std.testing.expect(app.onKeyInput(66, false));
+    try std.testing.expect(!app.vin_focused);
+    try std.testing.expect(!app.want_keyboard);
+    try std.testing.expectEqual(@as(?android_platform.HapticKind, .confirm), app.takePendingHaptic());
+
+    // Clear & Fill buttons
+    try std.testing.expect(try tapNode(&app, &arena, &router, "kit_vin_clear", w, h));
+    try std.testing.expectEqual(@as(usize, 0), app.vin_len);
+    _ = app.takePendingHaptic();
+    try std.testing.expect(try tapNode(&app, &arena, &router, "kit_vin_fill", w, h));
+    try std.testing.expectEqualStrings("5YJ3E1EA7LF000001", app.vin_buf[0..app.vin_len]);
+    try std.testing.expectEqual(@as(?android_platform.HapticKind, .confirm), app.takePendingHaptic());
+
+    // 3. Controls: Checkbox tri-state cycle, RadioGroup, Switch, Toast
+    try std.testing.expectEqual(controls.CheckboxState.checked, app.kit_checkbox);
+    try std.testing.expect(try tapNode(&app, &arena, &router, "kit_checkbox", w, h));
+    try std.testing.expectEqual(controls.CheckboxState.indeterminate, app.kit_checkbox);
+    try std.testing.expect(try tapNode(&app, &arena, &router, "kit_checkbox", w, h));
+    try std.testing.expectEqual(controls.CheckboxState.unchecked, app.kit_checkbox);
+    try std.testing.expect(try tapNode(&app, &arena, &router, "kit_checkbox", w, h));
+    try std.testing.expectEqual(controls.CheckboxState.checked, app.kit_checkbox);
+
+    try std.testing.expectEqual(@as(usize, 0), app.kit_radio.selected);
+    try std.testing.expect(try tapNode(&app, &arena, &router, "kit_radio_2", w, h));
+    try std.testing.expectEqual(@as(usize, 2), app.kit_radio.selected);
+
+    try std.testing.expect(app.kit_switch);
+    try std.testing.expect(try tapNode(&app, &arena, &router, "kit_switch", w, h));
+    try std.testing.expect(!app.kit_switch);
+
+    try std.testing.expect(try tapNode(&app, &arena, &router, "kit_toast_btn", w, h));
+    try std.testing.expect(app.kit_toasts.top() != null);
+    try std.testing.expect(app.isAnimating());
+    _ = app.takePendingHaptic();
+
+    // 4. emitPostQuads renders Checkbox/Switch/Radio/Progress/Spinner/Skeleton/Alert/Badge/Toast + all 8 CarIcons
+    try std.testing.expect(try tapNode(&app, &arena, &router, "kit_vin_box", w, h));
+    app.hud_budget = false;
+    var quads: [2048]core.QuadInstance = undefined;
+    const base_count = arena.emitQuadsWithAtlas(&quads, 2.0, &atlas, 1);
+    const total = app.emitPostQuads(&arena, &quads, base_count, w, h, 2.0, &atlas, 1);
+    // Should include tab indicator + badge (+text) + caret + checkbox(2) + switch(2) + 3 radios(4) + progress(2) + spinner(8) + skeleton(1) + alert(2+text) + 8 icons(>=24) + toast(1+text)
+    try std.testing.expect(total >= base_count + 50);
+
+    // Verify all 8 CarIcon slots emit SDF icon quads when scrolled into view
+    arena.setScroll(app.scroll_container.?, 0.0, 140.0);
+    arena.layout(w, h);
+    const total_scrolled = app.emitPostQuads(&arena, &quads, arena.emitQuadsWithAtlas(&quads, 2.0, &atlas, 2), w, h, 2.0, &atlas, 2);
+    const icon_ids = [8][]const u8{
+        "kit_icon_0", "kit_icon_1", "kit_icon_2", "kit_icon_3",
+        "kit_icon_4", "kit_icon_5", "kit_icon_6", "kit_icon_7",
+    };
+    for (icon_ids) |iid| {
+        const ir = arena.getRect(arena.findByTestId(iid).?).?;
+        var hits: usize = 0;
+        for (quads[0..total_scrolled]) |q| {
+            if (@abs(q.params[3] - wearos.AMBIENT_FG_SDF_MODE) < 1e-5) {
+                const cx = (q.pos_size[0] + q.pos_size[2] * 0.5) / 2.0;
+                const cy = (q.pos_size[1] + q.pos_size[3] * 0.5) / 2.0;
+                if (cx >= ir.x and cx <= ir.x + ir.w and cy >= ir.y and cy <= ir.y + ir.h) {
+                    hits += 1;
+                }
+            }
+        }
+        try std.testing.expect(hits >= 2);
+    }
+
+    // Toast expires and switching away blurs VIN -> returns to 0% idle CPU
+    _ = app.onKeyInput(66, false);
+    var t_steps: usize = 0;
+    while (app.isAnimating() and t_steps < 300) : (t_steps += 1) {
+        _ = app.stepAnimations(1.0 / 60.0);
+    }
+    try std.testing.expect(app.kit_toasts.top() == null);
+    try std.testing.expect(!app.isAnimating());
+
+    // Switching tabs away from .kit while focused blurs VIN and clears want_keyboard
+    try std.testing.expect(try tapNode(&app, &arena, &router, "kit_vin_box", w, h));
+    try std.testing.expect(app.vin_focused);
+    try std.testing.expect(app.want_keyboard);
+    try std.testing.expect(try tapNode(&app, &arena, &router, "tab_scroll", w, h));
+    try std.testing.expect(!app.vin_focused);
+    try std.testing.expect(!app.want_keyboard);
 }

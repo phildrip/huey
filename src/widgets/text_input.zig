@@ -124,7 +124,7 @@ fn clearEditor(editor: *text_edit.TextEditor) void {
     };
 }
 
-fn stepBlinkState(focused: bool, blink_accum_s: *f32, caret_on: *bool, dt_s: f32) bool {
+pub fn stepBlinkState(focused: bool, blink_accum_s: *f32, caret_on: *bool, dt_s: f32) bool {
     if (!focused) return false;
     if (!std.math.isFinite(dt_s) or dt_s <= 0.0) return false;
     if (!std.math.isFinite(blink_accum_s.*) or blink_accum_s.* < 0.0) {

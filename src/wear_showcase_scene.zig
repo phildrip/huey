@@ -6,6 +6,7 @@ const wearos = @import("wearos.zig");
 const hold_confirm = @import("hold_confirm.zig");
 const glyph_atlas = @import("glyph_atlas.zig");
 const animation = @import("animation.zig");
+const android_platform = @import("android_platform.zig");
 
 pub const ACCENTS = [_][4]f32{
     core.Nord.frost_1, // #88C0D0 Nord Frost
@@ -64,6 +65,7 @@ pub const WearShowcaseApp = struct {
     scroll_progress: f32 = 0.0,
     last_frame_ms: f32 = 1.8,
     last_quad_count: usize = 0,
+    pending_haptic: ?android_platform.HapticKind = null,
 
     stats_buf: [64]u8 = undefined,
     counter_buf: [32]u8 = undefined,
@@ -85,9 +87,16 @@ pub const WearShowcaseApp = struct {
         }
         if (self.frunk_hold.step(dt_s)) {
             self.frunk_open = !self.frunk_open;
+            self.pending_haptic = .double_pulse;
             self.triggerBezelPulse();
         }
         return anim_active or self.frunk_hold.isAnimating();
+    }
+
+    pub fn takePendingHaptic(self: *WearShowcaseApp) ?android_platform.HapticKind {
+        const h = self.pending_haptic;
+        self.pending_haptic = null;
+        return h;
     }
 
     pub fn accent(self: *const WearShowcaseApp) core.Color {

@@ -6,10 +6,17 @@ const wearos = @import("wearos.zig");
 const hold_confirm = @import("hold_confirm.zig");
 const glyph_atlas = @import("glyph_atlas.zig");
 const animation = @import("animation.zig");
+const tokens = @import("tokens.zig");
+const theme = @import("theme.zig");
+const text_input = @import("widgets/text_input.zig");
+const controls = @import("widgets/controls.zig");
+const primitives = @import("widgets/primitives.zig");
+const android_platform = @import("android_platform.zig");
 
 pub const Tab = enum(u8) {
     scroll,
     widgets,
+    kit,
     popups,
     hud,
 };
@@ -107,6 +114,46 @@ const POP_BTN_W: f32 = 132.0;
 const POP_BTN_H: f32 = 48.0;
 const FRAME_BUDGET_MS: f32 = 16.67;
 const MIN_TOUCH_TARGET_DP: f32 = 44.0;
+const KIT_VIN_MAX: usize = 17;
+const KIT_DEMO_VIN = "5YJ3E1EA7LF000001";
+const KIT_CAR_ICONS = [_]primitives.CarIcon{
+    .lock,
+    .unlock,
+    .frunk,
+    .trunk,
+    .headlights,
+    .key,
+    .power,
+    .settings,
+};
+
+fn contrastingText(bg: core.Color) core.Color {
+    return if (tokens.OklabColor.fromSrgb(bg).l >= 0.58)
+        core.Nord.polar_night_0
+    else
+        core.Nord.snow_storm_2;
+}
+
+fn clampRectClip(base_clip: [4]f32, rect: core.Rect, scale_factor: f32) [4]f32 {
+    const phys = core.snapRectToPhysical(rect, scale_factor);
+    return .{
+        @max(base_clip[0], phys.x),
+        @max(base_clip[1], phys.y),
+        @min(base_clip[2], phys.x + phys.w),
+        @min(base_clip[3], phys.y + phys.h),
+    };
+}
+
+fn centeredSubRect(rect: core.Rect, w: f32, h: f32) core.Rect {
+    const cw = @min(rect.w, w);
+    const ch = @min(rect.h, h);
+    return .{
+        .x = rect.x + (rect.w - cw) * 0.5,
+        .y = rect.y + (rect.h - ch) * 0.5,
+        .w = cw,
+        .h = ch,
+    };
+}
 
 fn sanitizePositive(v: f32, fallback: f32) f32 {
     if (!std.math.isFinite(v) or v <= 0.0) return fallback;
@@ -200,6 +247,22 @@ pub const ShowcaseApp = struct {
     counter_buf: [32]u8 = undefined,
     stats_buf: [64]u8 = undefined,
     slider_buf: [32]u8 = undefined,
+    vin_buf: [17]u8 = [_]u8{0} ** 17,
+    vin_len: usize = 0,
+    vin_focused: bool = false,
+    vin_caret_on: bool = true,
+    vin_blink_accum: f32 = 0.0,
+    theme_preset: theme.ThemePreset = .nord_dark,
+    token_table: tokens.TokenTable = theme.buildPreset(.nord_dark),
+    kit_checkbox: controls.CheckboxState = .checked,
+    kit_switch: bool = true,
+    kit_radio: controls.RadioGroup = controls.RadioGroup.init(3, 0),
+    kit_toasts: primitives.ToastQueue = primitives.ToastQueue.init(),
+    kit_anim_phase: f32 = 0.0,
+    pending_haptic: ?android_platform.HapticKind = null,
+    want_keyboard: bool = false,
+    kit_vin_display_buf: [32]u8 = undefined,
+    kit_toast_buf: [64]u8 = undefined,
 
     pub fn init() ShowcaseApp {
         return .{};
@@ -207,19 +270,32 @@ pub const ShowcaseApp = struct {
 
     pub fn isAnimating(self: *const ShowcaseApp) bool {
         const wear_hold_anim = self.active_tab == .widgets and !self.wear_ambient and self.frunk_hold.isAnimating();
-        return self.anims.isAnimating() or wear_hold_anim;
+        const kit_anim = self.active_tab == .kit and (self.kit_toasts.isAnimating() or self.vin_focused);
+        return self.anims.isAnimating() or wear_hold_anim or kit_anim;
     }
 
     pub fn stepAnimations(self: *ShowcaseApp, dt_s: f32) bool {
         const anim_active = self.anims.step(dt_s);
+        self.kit_toasts.step(dt_s);
+        if (self.active_tab == .kit and std.math.isFinite(dt_s) and dt_s > 0.0) {
+            self.kit_anim_phase = @mod(self.kit_anim_phase + @min(dt_s, 1.0) * 4.0, std.math.tau);
+            _ = text_input.stepBlinkState(self.vin_focused, &self.vin_blink_accum, &self.vin_caret_on, dt_s);
+        }
         if (self.active_tab != .widgets or self.wear_ambient) {
             self.frunk_hold.reset();
-            return anim_active;
+            return anim_active or (self.active_tab == .kit and (self.kit_toasts.isAnimating() or self.vin_focused));
         }
         if (self.frunk_hold.step(dt_s)) {
             self.frunk_open = !self.frunk_open;
+            self.pending_haptic = .double_pulse;
         }
         return anim_active or self.frunk_hold.isAnimating();
+    }
+
+    pub fn takePendingHaptic(self: *ShowcaseApp) ?android_platform.HapticKind {
+        const h = self.pending_haptic;
+        self.pending_haptic = null;
+        return h;
     }
 
     pub fn accent(self: *const ShowcaseApp) core.Color {
@@ -254,11 +330,16 @@ pub const ShowcaseApp = struct {
                 self.last_quad_count,
             }) catch "1 FPS | -- ms";
 
+        const root_fill = if (self.active_tab == .kit)
+            self.token_table.bg_base.toSrgb()
+        else
+            core.Nord.polar_night_0;
+
         const root = try arena.addNode(.{
             .kind = .vstack,
             .role = .container,
             .test_id = "showcase.root",
-            .fill = core.Nord.polar_night_0,
+            .fill = root_fill,
             .clip_children = true,
         });
 
@@ -301,9 +382,9 @@ pub const ShowcaseApp = struct {
             .border = cur_accent,
         });
 
-        // Pinned 4-Tab Bar (height = 52, polar_night_1, horizontal .hstack)
-        // Use padding = 2.0 and responsive gap so 48dp touch-ergonomic tabs fit cleanly >= 44dp wide even at 200dp.
-        const tab_gap = @min(8.0, @max(2.0, (vw - 180.0) * 0.25));
+        // Pinned 5-Tab Bar (height = 52, polar_night_1, horizontal .hstack)
+        // Responsive gap and font size so all 5 tabs fit cleanly on 768dp tablets and narrow viewports.
+        const tab_gap = @min(8.0, @max(2.0, (vw - 240.0) * 0.15));
         const tab_bar = try arena.addChild(root, .{
             .kind = .hstack,
             .role = .container,
@@ -324,9 +405,11 @@ pub const ShowcaseApp = struct {
         }{
             .{ .tab = .scroll, .id = "tab_scroll", .label = "Scroll" },
             .{ .tab = .widgets, .id = "tab_widgets", .label = "Widgets" },
+            .{ .tab = .kit, .id = "tab_kit", .label = "Kit" },
             .{ .tab = .popups, .id = "tab_popups", .label = "Popups" },
             .{ .tab = .hud, .id = "tab_hud", .label = "HUD" },
         };
+        const tab_font_size: f32 = if (vw < 360.0) 11.5 else 13.5;
         for (tab_specs) |ts| {
             const active = (self.active_tab == ts.tab);
             _ = try arena.addChild(tab_bar, .{
@@ -334,7 +417,7 @@ pub const ShowcaseApp = struct {
                 .role = .panel,
                 .test_id = ts.id,
                 .label = ts.label,
-                .font_size = 14.0,
+                .font_size = tab_font_size,
                 .text_color = if (active) core.Nord.polar_night_0 else core.Nord.snow_storm_1,
                 .height = 48.0,
                 .corner_radius = 12.0,
@@ -362,6 +445,7 @@ pub const ShowcaseApp = struct {
         switch (self.active_tab) {
             .scroll => try self.buildScrollTab(arena, body_id, cur_accent, vw),
             .widgets => try self.buildWidgetsTab(arena, body_id, cur_accent, vw),
+            .kit => try self.buildKitTab(arena, body_id, vw),
             .popups => try self.buildPopupsTab(arena, body_id, cur_accent, vw, vh),
             .hud => try self.buildHudTab(arena, body_id, cur_accent),
         }
@@ -710,6 +794,407 @@ pub const ShowcaseApp = struct {
             .accent = cur_accent,
             .checked = self.wear_ambient,
         });
+    }
+
+    fn buildKitTab(self: *ShowcaseApp, arena: *core.LayoutArena, body_id: core.NodeId, vw: f32) !void {
+        const tbl = &self.token_table;
+        const bg_base = tbl.bg_base.toSrgb();
+        const bg_surface = tbl.bg_surface.toSrgb();
+        const bg_elevated = tbl.bg_elevated.toSrgb();
+        const border_default = tbl.border_default.toSrgb();
+        const border_focus = tbl.border_focus.toSrgb();
+        const text_primary = tbl.text_primary.toSrgb();
+        const text_muted = tbl.text_muted.toSrgb();
+        const accent_col = tbl.accent_primary.toSrgb();
+        const radius_md = tbl.corner_radius_md;
+        const radius_lg = tbl.corner_radius_lg;
+        const bw_def = tbl.border_width_default;
+        const bw_foc = tbl.border_width_focus;
+
+        // Card 1: Live Theme Presets (theme.zig)
+        const two_col_presets = (vw < 340.0);
+        const theme_card_h: f32 = if (two_col_presets) 162.0 else 106.0;
+        const theme_card = try arena.addChild(body_id, .{
+            .kind = .card,
+            .role = .panel,
+            .test_id = "kit.theme_card",
+            .height = theme_card_h,
+            .padding = 12.0,
+            .gap = 10.0,
+            .corner_radius = radius_lg,
+            .border_width = bw_def,
+            .shadow_blur = tbl.shadow_sm,
+            .fill = bg_surface,
+            .border = border_default,
+        });
+        _ = try arena.addChild(theme_card, .{
+            .kind = .card,
+            .role = .panel,
+            .test_id = "kit.theme_title",
+            .label = "Live Theme Presets (Oklab)",
+            .font_size = 15.0,
+            .text_color = text_primary,
+            .height = 24.0,
+            .fill = core.Nord.transparent,
+        });
+        const preset_grid = try arena.addChild(theme_card, .{
+            .kind = .grid,
+            .role = .container,
+            .grid_cols = if (two_col_presets) 2 else 4,
+            .grid_col_gap = 8.0,
+            .grid_row_gap = 8.0,
+            .flex = 1.0,
+        });
+        const preset_specs = [_]struct {
+            preset: theme.ThemePreset,
+            id: []const u8,
+            label: []const u8,
+        }{
+            .{ .preset = .nord_dark, .id = "kit_theme_nord_dark", .label = "Nord Dark" },
+            .{ .preset = .nord_light, .id = "kit_theme_nord_light", .label = "Nord Light" },
+            .{ .preset = .oled_dark, .id = "kit_theme_oled", .label = "OLED" },
+            .{ .preset = .high_contrast_dark, .id = "kit_theme_hc", .label = "Hi-Con" },
+        };
+        const preset_fs: f32 = if (vw < 360.0) 12.0 else 13.5;
+        for (preset_specs) |ps| {
+            const sel = (self.theme_preset == ps.preset);
+            _ = try arena.addChild(preset_grid, .{
+                .kind = .card,
+                .role = .panel,
+                .test_id = ps.id,
+                .label = ps.label,
+                .font_size = preset_fs,
+                .text_color = if (sel) contrastingText(accent_col) else text_primary,
+                .height = 48.0,
+                .corner_radius = radius_md,
+                .border_width = if (sel) bw_foc else bw_def,
+                .fill = if (sel) accent_col else bg_elevated,
+                .border = if (sel) border_focus else border_default,
+                .focusable = true,
+            });
+        }
+
+        // Card 2: VIN TextInput + Validation Badge
+        const vin_card = try arena.addChild(body_id, .{
+            .kind = .card,
+            .role = .panel,
+            .test_id = "kit.vin_card",
+            .height = 164.0,
+            .padding = 12.0,
+            .gap = 8.0,
+            .corner_radius = radius_lg,
+            .border_width = bw_def,
+            .shadow_blur = tbl.shadow_sm,
+            .fill = bg_surface,
+            .border = border_default,
+        });
+        const vin_hdr = try arena.addChild(vin_card, .{
+            .kind = .hstack,
+            .role = .container,
+            .height = 28.0,
+            .gap = 8.0,
+            .align_items = .center,
+        });
+        _ = try arena.addChild(vin_hdr, .{
+            .kind = .card,
+            .role = .panel,
+            .test_id = "kit.vin_title",
+            .label = "VIN TextInput",
+            .font_size = 15.0,
+            .text_color = text_primary,
+            .height = 24.0,
+            .flex = 1.0,
+            .fill = core.Nord.transparent,
+        });
+        _ = try arena.addChild(vin_hdr, .{
+            .kind = .card,
+            .role = .panel,
+            .test_id = "kit_vin_badge",
+            .width = 64.0,
+            .height = 26.0,
+            .fill = core.Nord.transparent,
+        });
+
+        const safe_vin_len = @min(self.vin_len, KIT_VIN_MAX);
+        const vin_label = if (safe_vin_len > 0) blk: {
+            @memcpy(self.kit_vin_display_buf[0..safe_vin_len], self.vin_buf[0..safe_vin_len]);
+            break :blk self.kit_vin_display_buf[0..safe_vin_len];
+        } else "Tap to type 17-char VIN";
+        _ = try arena.addChild(vin_card, .{
+            .kind = .card,
+            .role = .panel,
+            .test_id = "kit_vin_box",
+            .label = vin_label,
+            .font_size = 14.0,
+            .text_color = if (safe_vin_len > 0) text_primary else text_muted,
+            .height = 48.0,
+            .corner_radius = tbl.corner_radius_sm,
+            .border_width = if (self.vin_focused) bw_foc else bw_def,
+            .fill = bg_base,
+            .border = if (self.vin_focused) border_focus else border_default,
+            .focusable = true,
+        });
+
+        const vin_btn_row = try arena.addChild(vin_card, .{
+            .kind = .hstack,
+            .role = .container,
+            .height = 48.0,
+            .gap = 8.0,
+        });
+        _ = try arena.addChild(vin_btn_row, .{
+            .kind = .card,
+            .role = .panel,
+            .test_id = "kit_vin_fill",
+            .label = "Fill VIN",
+            .font_size = 14.0,
+            .text_color = text_primary,
+            .height = 48.0,
+            .corner_radius = radius_md,
+            .border_width = bw_def,
+            .fill = bg_elevated,
+            .border = border_default,
+            .focusable = true,
+        });
+        _ = try arena.addChild(vin_btn_row, .{
+            .kind = .card,
+            .role = .panel,
+            .test_id = "kit_vin_clear",
+            .label = "Clear",
+            .font_size = 14.0,
+            .text_color = text_primary,
+            .height = 48.0,
+            .corner_radius = radius_md,
+            .border_width = bw_def,
+            .fill = bg_elevated,
+            .border = border_default,
+            .focusable = true,
+        });
+
+        // Card 3: Controls (widgets/controls.zig)
+        const ctrl_card = try arena.addChild(body_id, .{
+            .kind = .card,
+            .role = .panel,
+            .test_id = "kit.controls_card",
+            .height = 216.0,
+            .padding = 12.0,
+            .gap = 8.0,
+            .corner_radius = radius_lg,
+            .border_width = bw_def,
+            .shadow_blur = tbl.shadow_sm,
+            .fill = bg_surface,
+            .border = border_default,
+        });
+        _ = try arena.addChild(ctrl_card, .{
+            .kind = .card,
+            .role = .panel,
+            .test_id = "kit.controls_title",
+            .label = "Controls & Toast",
+            .font_size = 15.0,
+            .text_color = text_primary,
+            .height = 24.0,
+            .fill = core.Nord.transparent,
+        });
+        const cb_sw_row = try arena.addChild(ctrl_card, .{
+            .kind = .hstack,
+            .role = .container,
+            .height = 48.0,
+            .gap = 8.0,
+            .align_items = .center,
+        });
+        _ = try arena.addChild(cb_sw_row, .{
+            .kind = .card,
+            .role = .panel,
+            .test_id = "kit_checkbox",
+            .width = 48.0,
+            .height = 48.0,
+            .fill = bg_surface,
+            .focusable = true,
+        });
+        const cb_text = switch (self.kit_checkbox) {
+            .unchecked => "Unchecked",
+            .checked => "Checked",
+            .indeterminate => "Mixed",
+        };
+        _ = try arena.addChild(cb_sw_row, .{
+            .kind = .card,
+            .role = .panel,
+            .test_id = "kit.checkbox_label",
+            .label = cb_text,
+            .font_size = 13.5,
+            .text_color = text_primary,
+            .height = 32.0,
+            .flex = 1.0,
+            .fill = core.Nord.transparent,
+        });
+        _ = try arena.addChild(cb_sw_row, .{
+            .kind = .card,
+            .role = .panel,
+            .test_id = "kit_switch",
+            .width = 60.0,
+            .height = 48.0,
+            .fill = bg_surface,
+            .focusable = true,
+        });
+
+        const radio_row = try arena.addChild(ctrl_card, .{
+            .kind = .hstack,
+            .role = .container,
+            .height = 48.0,
+            .gap = 6.0,
+            .align_items = .center,
+        });
+        if (vw >= 260.0) {
+            _ = try arena.addChild(radio_row, .{
+                .kind = .card,
+                .role = .panel,
+                .test_id = "kit.radio_label",
+                .label = "Radio",
+                .font_size = 13.5,
+                .text_color = text_muted,
+                .height = 32.0,
+                .flex = 1.0,
+                .fill = core.Nord.transparent,
+            });
+        }
+        const radio_ids = [3][]const u8{ "kit_radio_0", "kit_radio_1", "kit_radio_2" };
+        for (radio_ids) |rid| {
+            _ = try arena.addChild(radio_row, .{
+                .kind = .card,
+                .role = .panel,
+                .test_id = rid,
+                .width = 44.0,
+                .height = 44.0,
+                .fill = bg_surface,
+                .focusable = true,
+            });
+        }
+
+        _ = try arena.addChild(ctrl_card, .{
+            .kind = .card,
+            .role = .panel,
+            .test_id = "kit_toast_btn",
+            .label = "Show Toast",
+            .font_size = 14.5,
+            .text_color = contrastingText(accent_col),
+            .height = 48.0,
+            .corner_radius = radius_md,
+            .border_width = bw_def,
+            .fill = accent_col,
+            .border = accent_col,
+            .focusable = true,
+        });
+
+        // Card 4: Feedback Primitives (widgets/primitives.zig)
+        const feedback_card = try arena.addChild(body_id, .{
+            .kind = .card,
+            .role = .panel,
+            .test_id = "kit.feedback_card",
+            .height = 170.0,
+            .padding = 12.0,
+            .gap = 8.0,
+            .corner_radius = radius_lg,
+            .border_width = bw_def,
+            .shadow_blur = tbl.shadow_sm,
+            .fill = bg_surface,
+            .border = border_default,
+        });
+        _ = try arena.addChild(feedback_card, .{
+            .kind = .card,
+            .role = .panel,
+            .test_id = "kit.feedback_title",
+            .label = "Feedback Primitives",
+            .font_size = 15.0,
+            .text_color = text_primary,
+            .height = 24.0,
+            .fill = core.Nord.transparent,
+        });
+        const prog_row = try arena.addChild(feedback_card, .{
+            .kind = .hstack,
+            .role = .container,
+            .height = 32.0,
+            .gap = 10.0,
+            .align_items = .center,
+        });
+        _ = try arena.addChild(prog_row, .{
+            .kind = .card,
+            .role = .panel,
+            .test_id = "kit_progress_slot",
+            .height = 12.0,
+            .flex = 1.0,
+            .fill = core.Nord.transparent,
+        });
+        _ = try arena.addChild(prog_row, .{
+            .kind = .card,
+            .role = .panel,
+            .test_id = "kit_spinner_slot",
+            .width = 28.0,
+            .height = 28.0,
+            .fill = core.Nord.transparent,
+        });
+        _ = try arena.addChild(feedback_card, .{
+            .kind = .card,
+            .role = .panel,
+            .test_id = "kit_skeleton_slot",
+            .height = 18.0,
+            .fill = core.Nord.transparent,
+        });
+        _ = try arena.addChild(feedback_card, .{
+            .kind = .card,
+            .role = .panel,
+            .test_id = "kit_alert_slot",
+            .height = 48.0,
+            .fill = core.Nord.transparent,
+        });
+
+        // Card 5: Watch/Car SDF Icons (primitives.CarIcon)
+        const icons_card = try arena.addChild(body_id, .{
+            .kind = .card,
+            .role = .panel,
+            .test_id = "kit.icons_card",
+            .height = 144.0,
+            .padding = 12.0,
+            .gap = 8.0,
+            .corner_radius = radius_lg,
+            .border_width = bw_def,
+            .shadow_blur = tbl.shadow_sm,
+            .fill = bg_surface,
+            .border = border_default,
+        });
+        _ = try arena.addChild(icons_card, .{
+            .kind = .card,
+            .role = .panel,
+            .test_id = "kit.icons_title",
+            .label = "Watch / Car SDF Icons",
+            .font_size = 15.0,
+            .text_color = text_primary,
+            .height = 24.0,
+            .fill = core.Nord.transparent,
+        });
+        const icons_grid = try arena.addChild(icons_card, .{
+            .kind = .grid,
+            .role = .container,
+            .test_id = "kit.icons_grid",
+            .grid_cols = 4,
+            .grid_col_gap = 8.0,
+            .grid_row_gap = 8.0,
+            .flex = 1.0,
+        });
+        const icon_ids = [8][]const u8{
+            "kit_icon_0", "kit_icon_1", "kit_icon_2", "kit_icon_3",
+            "kit_icon_4", "kit_icon_5", "kit_icon_6", "kit_icon_7",
+        };
+        for (icon_ids) |iid| {
+            _ = try arena.addChild(icons_grid, .{
+                .kind = .card,
+                .role = .panel,
+                .test_id = iid,
+                .height = 40.0,
+                .corner_radius = radius_md,
+                .border_width = bw_def,
+                .fill = bg_base,
+                .border = border_default,
+            });
+        }
     }
 
     fn buildPopupsTab(
@@ -1127,9 +1612,9 @@ pub const ShowcaseApp = struct {
     }
 
     fn approxTabIndicatorX(tab: Tab, vw: f32) f32 {
-        const tab_gap = @min(8.0, @max(2.0, (vw - 180.0) * 0.25));
-        const inner_w = @max(0.0, vw - 4.0 - 3.0 * tab_gap);
-        const each_w = inner_w * 0.25;
+        const tab_gap = @min(8.0, @max(2.0, (vw - 240.0) * 0.15));
+        const inner_w = @max(0.0, vw - 4.0 - 4.0 * tab_gap);
+        const each_w = inner_w * 0.2;
         const ind_w = @min(@max(16.0, each_w * 0.56), each_w);
         const idx: f32 = @floatFromInt(@intFromEnum(tab));
         const tab_x = 2.0 + idx * (each_w + tab_gap);
@@ -1144,12 +1629,53 @@ pub const ShowcaseApp = struct {
         self.anims.snapSpring(animation.hashKey("popup", "scale"), 1.0);
         if (next_tab != prev_tab) {
             self.frunk_hold.reset();
+            if (next_tab != .kit) {
+                self.vin_focused = false;
+                self.want_keyboard = false;
+            }
         }
         if (next_tab != prev_tab and std.math.isFinite(logical_w) and logical_w > 0.0) {
             const key = animation.hashKey("tabs", "indicator_x");
             _ = self.anims.animateSpring(key, approxTabIndicatorX(prev_tab, logical_w), animation.SpringConfig.snappy);
             _ = self.anims.animateSpring(key, approxTabIndicatorX(next_tab, logical_w), animation.SpringConfig.snappy);
         }
+    }
+
+    fn setKitTheme(self: *ShowcaseApp, preset: theme.ThemePreset) void {
+        self.theme_preset = preset;
+        self.token_table = theme.buildPreset(preset);
+        self.pending_haptic = .tap;
+    }
+
+    pub fn onKeyInput(self: *ShowcaseApp, keycode: i32, shifted: bool) bool {
+        if (self.active_tab != .kit or !self.vin_focused) return false;
+        if (android_platform.isAndroidBackspace(keycode)) {
+            if (self.vin_len > 0) {
+                self.vin_len -= 1;
+                self.vin_buf[self.vin_len] = 0;
+                self.vin_caret_on = true;
+                self.vin_blink_accum = 0.0;
+                return true;
+            }
+            return true;
+        }
+        if (android_platform.isAndroidEnter(keycode)) {
+            self.vin_focused = false;
+            self.want_keyboard = false;
+            self.vin_caret_on = true;
+            self.vin_blink_accum = 0.0;
+            self.pending_haptic = if (self.vin_len == KIT_VIN_MAX) .confirm else .tap;
+            return true;
+        }
+        if (android_platform.androidKeycodeToAscii(keycode, shifted)) |ch| {
+            if (self.vin_len >= KIT_VIN_MAX) return false;
+            self.vin_buf[self.vin_len] = std.ascii.toUpper(ch);
+            self.vin_len += 1;
+            self.vin_caret_on = true;
+            self.vin_blink_accum = 0.0;
+            return true;
+        }
+        return false;
     }
 
     fn applyIdAction(self: *ShowcaseApp, test_id: []const u8, toggled_val: ?bool, logical_w: f32, logical_h: f32) bool {
@@ -1161,12 +1687,85 @@ pub const ShowcaseApp = struct {
             self.switchTab(.widgets, logical_w);
             return true;
         }
+        if (std.mem.eql(u8, test_id, "tab_kit")) {
+            self.switchTab(.kit, logical_w);
+            return true;
+        }
         if (std.mem.eql(u8, test_id, "tab_popups")) {
             self.switchTab(.popups, logical_w);
             return true;
         }
         if (std.mem.eql(u8, test_id, "tab_hud")) {
             self.switchTab(.hud, logical_w);
+            return true;
+        }
+        if (std.mem.eql(u8, test_id, "kit_theme_nord_dark")) {
+            self.setKitTheme(.nord_dark);
+            return true;
+        }
+        if (std.mem.eql(u8, test_id, "kit_theme_nord_light")) {
+            self.setKitTheme(.nord_light);
+            return true;
+        }
+        if (std.mem.eql(u8, test_id, "kit_theme_oled")) {
+            self.setKitTheme(.oled_dark);
+            return true;
+        }
+        if (std.mem.eql(u8, test_id, "kit_theme_hc")) {
+            self.setKitTheme(.high_contrast_dark);
+            return true;
+        }
+        if (std.mem.eql(u8, test_id, "kit_vin_box")) {
+            self.vin_focused = true;
+            self.want_keyboard = true;
+            self.vin_caret_on = true;
+            self.vin_blink_accum = 0.0;
+            self.pending_haptic = .tap;
+            return true;
+        }
+        if (std.mem.eql(u8, test_id, "kit_vin_fill")) {
+            @memcpy(self.vin_buf[0..KIT_VIN_MAX], KIT_DEMO_VIN);
+            self.vin_len = KIT_VIN_MAX;
+            self.vin_caret_on = true;
+            self.vin_blink_accum = 0.0;
+            self.pending_haptic = .confirm;
+            return true;
+        }
+        if (std.mem.eql(u8, test_id, "kit_vin_clear")) {
+            @memset(&self.vin_buf, 0);
+            self.vin_len = 0;
+            self.vin_caret_on = true;
+            self.vin_blink_accum = 0.0;
+            self.pending_haptic = .tap;
+            return true;
+        }
+        if (std.mem.eql(u8, test_id, "kit_checkbox")) {
+            self.kit_checkbox = switch (self.kit_checkbox) {
+                .unchecked => .checked,
+                .checked => .indeterminate,
+                .indeterminate => .unchecked,
+            };
+            self.pending_haptic = .tap;
+            return true;
+        }
+        if (std.mem.eql(u8, test_id, "kit_switch")) {
+            self.kit_switch = !self.kit_switch;
+            self.pending_haptic = .tap;
+            return true;
+        }
+        if (parseIndexSuffix(test_id, "kit_radio_", 3)) |idx| {
+            self.kit_radio.select(idx);
+            self.pending_haptic = .tap;
+            return true;
+        }
+        if (std.mem.eql(u8, test_id, "kit_toast_btn")) {
+            const msg = std.fmt.bufPrint(&self.kit_toast_buf, "Huey Kit: VIN {d}/17 | Mode {d}", .{
+                self.vin_len,
+                self.kit_radio.selected + 1,
+            }) catch "Huey Kit Toast";
+            const variant: primitives.AlertVariant = if (self.vin_len == KIT_VIN_MAX) .success else .info;
+            self.kit_toasts.push(msg, variant, 3.0);
+            self.pending_haptic = .confirm;
             return true;
         }
         if (parseIndexSuffix(test_id, "accent_", ACCENTS.len)) |idx| {
@@ -1354,6 +1953,248 @@ pub const ShowcaseApp = struct {
         }
     }
 
+    fn computeBodyClip(self: *const ShowcaseApp, arena: *const core.LayoutArena, full_clip: [4]f32, scale_factor: f32) [4]f32 {
+        if (self.scroll_container orelse arena.findByTestId("showcase.body")) |sc| {
+            if (arena.getRect(sc)) |body_rect| {
+                if (isPositiveFiniteRect(body_rect)) {
+                    return clampRectClip(full_clip, body_rect, scale_factor);
+                }
+            }
+        }
+        return full_clip;
+    }
+
+    fn emitCenteredSlotText(
+        atlas: ?*glyph_atlas.GlyphAtlas,
+        text: []const u8,
+        rect: core.Rect,
+        font_size: f32,
+        scale_factor: f32,
+        color: core.Color,
+        clip_rect: [4]f32,
+        out_quads: []core.QuadInstance,
+        count: *usize,
+        limit: usize,
+        frame_idx: u64,
+    ) void {
+        const a = atlas orelse return;
+        if (text.len == 0 or count.* >= limit or isClipEmpty(clip_rect)) return;
+        const m = a.measureText(text, font_size, scale_factor);
+        const lx = rect.x + @max(4.0, (rect.w - m.width) * 0.5);
+        const ly = rect.y + (rect.h - m.height) * 0.5;
+        count.* += a.emitTextQuadsClipped(
+            text,
+            lx,
+            ly,
+            font_size,
+            scale_factor,
+            color,
+            clip_rect,
+            out_quads[count.*..limit],
+            frame_idx,
+        );
+    }
+
+    fn emitKitPostQuads(
+        self: *ShowcaseApp,
+        arena: *const core.LayoutArena,
+        out_quads: []core.QuadInstance,
+        count: *usize,
+        limit: usize,
+        scale_factor: f32,
+        body_clip: [4]f32,
+        atlas: ?*glyph_atlas.GlyphAtlas,
+        frame_idx: u64,
+    ) void {
+        if (count.* >= limit or isClipEmpty(body_clip)) return;
+        const tbl = &self.token_table;
+        const safe_vin_len = @min(self.vin_len, KIT_VIN_MAX);
+        const vin_valid = (safe_vin_len == KIT_VIN_MAX);
+
+        if (arena.findByTestId("kit_vin_badge")) |nid| {
+            if (arena.getRect(nid)) |r| {
+                if (isPositiveFiniteRect(r) and count.* < limit) {
+                    const variant: primitives.BadgeVariant = if (vin_valid) .success else .secondary;
+                    const badge_bg = if (vin_valid) tbl.accent_success.toSrgb() else tbl.bg_elevated.toSrgb();
+                    const badge_text = std.fmt.bufPrint(self.kit_vin_display_buf[17..32], "{d}/17", .{safe_vin_len}) catch "0/17";
+                    count.* += primitives.emitBadge(.{ .variant = variant, .label = badge_text, .pill = true }, r, scale_factor, tbl, out_quads[count.*..limit], body_clip);
+                    const b_clip = clampRectClip(body_clip, r, scale_factor);
+                    const b_col = if (vin_valid) contrastingText(badge_bg) else tbl.text_primary.toSrgb();
+                    emitCenteredSlotText(atlas, badge_text, r, 12.0, scale_factor, b_col, b_clip, out_quads, count, limit, frame_idx);
+                }
+            }
+        }
+
+        if (self.vin_focused and self.vin_caret_on and count.* < limit) {
+            if (arena.findByTestId("kit_vin_box")) |nid| {
+                if (arena.getRect(nid)) |r| {
+                    if (isPositiveFiniteRect(r)) {
+                        var caret_x: f32 = r.x + @min(8.0, r.w * 0.1) + @as(f32, @floatFromInt(safe_vin_len)) * 8.0;
+                        if (atlas) |a| {
+                            const shown = if (safe_vin_len > 0) self.vin_buf[0..safe_vin_len] else "";
+                            const m = a.measureText(shown, 14.0, scale_factor);
+                            const label_x = if (safe_vin_len == 0) blk: {
+                                const pm = a.measureText("Tap to type 17-char VIN", 14.0, scale_factor);
+                                break :blk if (r.w < 260.0 and pm.width < r.w) r.x + (r.w - pm.width) * 0.5 else r.x + @min(8.0, r.w * 0.1);
+                            } else if (r.w < 260.0 and m.width < r.w)
+                                r.x + (r.w - m.width) * 0.5
+                            else
+                                r.x + @min(8.0, r.w * 0.1);
+                            caret_x = label_x + (if (safe_vin_len > 0) m.width + 2.0 else 0.0);
+                        }
+                        const clamped_cx = std.math.clamp(caret_x, r.x + 4.0, @max(r.x + 4.0, r.x + r.w - 6.0));
+                        const caret_h = @max(8.0, r.h * 0.54);
+                        const caret_rect = core.Rect{
+                            .x = clamped_cx,
+                            .y = r.y + (r.h - caret_h) * 0.5,
+                            .w = 2.0,
+                            .h = caret_h,
+                        };
+                        appendPostQuad(out_quads, count, limit, caret_rect, scale_factor, tbl.border_focus.toSrgb(), core.Nord.transparent, 1.0, 0.0, clampRectClip(body_clip, r, scale_factor));
+                    }
+                }
+            }
+        }
+
+        if (arena.findByTestId("kit_checkbox")) |nid| {
+            if (arena.getRect(nid)) |r| {
+                if (isPositiveFiniteRect(r) and count.* < limit) {
+                    const cb_rect = centeredSubRect(r, 26.0, 26.0);
+                    count.* += controls.emitCheckbox(.{ .id = "kit_cb", .state = self.kit_checkbox }, cb_rect, scale_factor, tbl, &self.anims, out_quads[count.*..limit], body_clip);
+                }
+            }
+        }
+
+        if (arena.findByTestId("kit_switch")) |nid| {
+            if (arena.getRect(nid)) |r| {
+                if (isPositiveFiniteRect(r) and count.* < limit) {
+                    const sw_rect = centeredSubRect(r, 52.0, 28.0);
+                    count.* += controls.emitSwitch(.{ .id = "kit_sw", .checked = self.kit_switch }, sw_rect, scale_factor, tbl, &self.anims, out_quads[count.*..limit], body_clip);
+                }
+            }
+        }
+
+        const radio_slot_ids = [3][]const u8{ "kit_radio_0", "kit_radio_1", "kit_radio_2" };
+        const radio_anim_ids = [3][]const u8{ "kit_rd_0", "kit_rd_1", "kit_rd_2" };
+        for (radio_slot_ids, 0..) |rid, idx| {
+            if (count.* >= limit) break;
+            if (arena.findByTestId(rid)) |nid| {
+                if (arena.getRect(nid)) |r| {
+                    if (isPositiveFiniteRect(r)) {
+                        const rd_rect = centeredSubRect(r, 24.0, 24.0);
+                        count.* += controls.emitRadio(.{ .id = radio_anim_ids[idx], .selected = (self.kit_radio.selected == idx) }, rd_rect, scale_factor, tbl, &self.anims, out_quads[count.*..limit], body_clip);
+                    }
+                }
+            }
+        }
+
+        if (arena.findByTestId("kit_progress_slot")) |nid| {
+            if (arena.getRect(nid)) |r| {
+                if (isPositiveFiniteRect(r) and count.* < limit) {
+                    const prog = if (safe_vin_len > 0) @as(f32, @floatFromInt(safe_vin_len)) / @as(f32, @floatFromInt(KIT_VIN_MAX)) else sanitizeUnit(self.slider_value);
+                    count.* += primitives.emitProgress(prog, r, scale_factor, tbl, out_quads[count.*..limit], body_clip);
+                }
+            }
+        }
+
+        if (arena.findByTestId("kit_spinner_slot")) |nid| {
+            if (arena.getRect(nid)) |r| {
+                if (isPositiveFiniteRect(r) and count.* < limit) {
+                    count.* += primitives.emitSpinner(self.kit_anim_phase, r, scale_factor, tbl, out_quads[count.*..limit], body_clip);
+                }
+            }
+        }
+
+        if (arena.findByTestId("kit_skeleton_slot")) |nid| {
+            if (arena.getRect(nid)) |r| {
+                if (isPositiveFiniteRect(r) and count.* < limit) {
+                    count.* += primitives.emitSkeleton(self.kit_anim_phase / std.math.tau, r, scale_factor, tbl, out_quads[count.*..limit], body_clip);
+                }
+            }
+        }
+
+        if (arena.findByTestId("kit_alert_slot")) |nid| {
+            if (arena.getRect(nid)) |r| {
+                if (isPositiveFiniteRect(r) and count.* < limit) {
+                    const av: primitives.AlertVariant = if (vin_valid) .success else .info;
+                    const alert_msg = if (vin_valid) "VIN Validated (17/17)" else "Enter 17-char VIN above";
+                    count.* += primitives.emitAlert(av, r, scale_factor, tbl, out_quads[count.*..limit], body_clip);
+                    const a_clip = clampRectClip(body_clip, r, scale_factor);
+                    if (atlas) |a| {
+                        if (!isClipEmpty(a_clip) and count.* < limit) {
+                            const m = a.measureText(alert_msg, 13.0, scale_factor);
+                            const ly = r.y + (r.h - m.height) * 0.5;
+                            count.* += a.emitTextQuadsClipped(alert_msg, r.x + 14.0, ly, 13.0, scale_factor, tbl.text_primary.toSrgb(), a_clip, out_quads[count.*..limit], frame_idx);
+                        }
+                    }
+                }
+            }
+        }
+
+        const icon_slot_ids = [8][]const u8{
+            "kit_icon_0", "kit_icon_1", "kit_icon_2", "kit_icon_3",
+            "kit_icon_4", "kit_icon_5", "kit_icon_6", "kit_icon_7",
+        };
+        const icon_col = tbl.text_primary.toSrgb();
+        for (icon_slot_ids, 0..) |iid, idx| {
+            if (count.* >= limit) break;
+            if (arena.findByTestId(iid)) |nid| {
+                if (arena.getRect(nid)) |r| {
+                    if (isPositiveFiniteRect(r)) {
+                        const icon_side = @min(r.w, r.h) * 0.68;
+                        const icon_rect = centeredSubRect(r, icon_side, icon_side);
+                        count.* += primitives.emitCarIcon(KIT_CAR_ICONS[idx], icon_rect, scale_factor, icon_col, out_quads[count.*..limit], body_clip);
+                    }
+                }
+            }
+        }
+    }
+
+    fn emitKitToast(
+        self: *const ShowcaseApp,
+        out_quads: []core.QuadInstance,
+        count: *usize,
+        limit: usize,
+        logical_w: f32,
+        logical_h: f32,
+        scale_factor: f32,
+        full_clip: [4]f32,
+        atlas: ?*glyph_atlas.GlyphAtlas,
+        frame_idx: u64,
+    ) void {
+        const toast = self.kit_toasts.top() orelse return;
+        if (count.* >= limit or logical_w < 80.0 or logical_h < 64.0) return;
+
+        const tbl = &self.token_table;
+        const toast_w = @min(340.0, logical_w - 24.0);
+        const toast_h: f32 = 44.0;
+        const toast_rect = core.Rect{
+            .x = (logical_w - toast_w) * 0.5,
+            .y = logical_h - toast_h - 14.0,
+            .w = toast_w,
+            .h = toast_h,
+        };
+        const border_col = switch (toast.variant) {
+            .success => tbl.accent_success.toSrgb(),
+            .warning => tbl.accent_warn.toSrgb(),
+            .destructive => tbl.accent_danger.toSrgb(),
+            .info => tbl.accent_primary.toSrgb(),
+        };
+        const phys_toast = core.snapRectToPhysical(toast_rect, scale_factor);
+        if (!rectsIntersectClip(phys_toast, full_clip)) return;
+        out_quads[count.*] = .{
+            .pos_size = .{ phys_toast.x, phys_toast.y, phys_toast.w, phys_toast.h },
+            .color = core.sanitizeColor(tbl.bg_elevated.toSrgb()),
+            .border_color = core.sanitizeColor(border_col),
+            .params = .{ 14.0 * scale_factor, 1.5 * scale_factor, 10.0 * scale_factor, 0.0 },
+            .clip_rect = full_clip,
+        };
+        count.* += 1;
+
+        const toast_clip = clampRectClip(full_clip, toast_rect, scale_factor);
+        emitCenteredSlotText(atlas, toast.message(), toast_rect, 13.5, scale_factor, tbl.text_primary.toSrgb(), toast_clip, out_quads, count, limit, frame_idx);
+    }
+
     pub fn emitPostQuads(
         self: *ShowcaseApp,
         arena: *const core.LayoutArena,
@@ -1435,7 +2276,7 @@ pub const ShowcaseApp = struct {
         const budget_reserve: usize = if (can_draw_budget and out_quads.len >= count + 2) 2 else 0;
         const hud_limit = out_quads.len - budget_reserve;
 
-        // 0. Gliding active tab underline indicator pill (snappy spring across the 4 tabs)
+        // 0. Gliding active tab underline indicator pill (snappy spring across the 5 tabs)
         const cur_accent = self.anims.animateColor(
             animation.hashKey("theme", "accent"),
             self.accent(),
@@ -1444,6 +2285,7 @@ pub const ShowcaseApp = struct {
         const active_tab_id = switch (self.active_tab) {
             .scroll => "tab_scroll",
             .widgets => "tab_widgets",
+            .kit => "tab_kit",
             .popups => "tab_popups",
             .hud => "tab_hud",
         };
@@ -1488,23 +2330,7 @@ pub const ShowcaseApp = struct {
                 if (arena.getRect(bezel_id)) |bezel_rect| {
                     if (isPositiveFiniteRect(bezel_rect)) {
                         const phys_bezel = core.snapRectToPhysical(bezel_rect, scale_factor);
-                        var body_clip = [4]f32{
-                            @max(full_clip[0], phys_bezel.x),
-                            @max(full_clip[1], phys_bezel.y),
-                            @min(full_clip[2], phys_bezel.x + phys_bezel.w),
-                            @min(full_clip[3], phys_bezel.y + phys_bezel.h),
-                        };
-                        if (self.scroll_container orelse arena.findByTestId("showcase.body")) |sc| {
-                            if (arena.getRect(sc)) |body_rect| {
-                                const phys_body = core.snapRectToPhysical(body_rect, scale_factor);
-                                body_clip = .{
-                                    @max(body_clip[0], phys_body.x),
-                                    @max(body_clip[1], phys_body.y),
-                                    @min(body_clip[2], phys_body.x + phys_body.w),
-                                    @min(body_clip[3], phys_body.y + phys_body.h),
-                                };
-                            }
-                        }
+                        const body_clip = clampRectClip(self.computeBodyClip(arena, full_clip, scale_factor), bezel_rect, scale_factor);
                         const bezel_cx = phys_bezel.x + phys_bezel.w * 0.5;
                         const bezel_cy = phys_bezel.y + phys_bezel.h * 0.5;
                         const bezel_r = @min(phys_bezel.w, phys_bezel.h) * 0.5 - 4.0 * scale_factor;
@@ -1521,6 +2347,17 @@ pub const ShowcaseApp = struct {
                     }
                 }
             }
+        }
+
+        // 0c. Kit Tab custom widget SDF quads & blinking caret
+        if (self.active_tab == .kit and count < hud_limit) {
+            const body_clip = self.computeBodyClip(arena, full_clip, scale_factor);
+            self.emitKitPostQuads(arena, out_quads, &count, hud_limit, scale_factor, body_clip, atlas, frame_idx);
+        }
+
+        // 0d. Floating bottom-center Kit Toast banner (escapes parent scissors)
+        if (self.kit_toasts.top() != null and count < hud_limit) {
+            self.emitKitToast(out_quads, &count, hud_limit, logical_w, logical_h, scale_factor, full_clip, atlas, frame_idx);
         }
 
         // 1. Active overlays (escaping all parent scissors) + bouncy scale-in + popup title text
