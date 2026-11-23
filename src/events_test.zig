@@ -371,3 +371,131 @@ test "regression: bordered transparent card occlusion, bar-inside-card click bub
     router.dispatch(&arena, .focus_lost);
     try std.testing.expectEqual(@as(usize, 0), router.pollEvents().len);
 }
+
+test "EventRouter Tab/Shift+Tab, Space toggle, Arrow slider/roving, and disabled node rejection" {
+    var arena = core.LayoutArena.init(std.testing.allocator);
+    defer arena.deinit();
+
+    const root = try arena.addNode(.{ .kind = .vstack, .role = .container, .padding = 16.0, .gap = 12.0 });
+    const t_on = try arena.addChild(root, .{ .kind = .toggle, .role = .switch_control, .test_id = "t.enabled", .height = 48.0, .checked = false });
+    const t_off = try arena.addChild(root, .{ .kind = .toggle, .role = .switch_control, .test_id = "t.disabled", .height = 48.0, .disabled = true, .checked = false });
+    const s_on = try arena.addChild(root, .{ .kind = .slider, .role = .slider, .test_id = "s.enabled", .height = 48.0, .slider_val = 0.5 });
+    const s_off = try arena.addChild(root, .{ .kind = .slider, .role = .slider, .test_id = "s.disabled", .height = 48.0, .disabled = true, .slider_val = 0.5 });
+    const toolbar = try arena.addChild(root, .{ .kind = .hstack, .role = .container, .roving_group = true, .height = 48.0 });
+    const b0 = try arena.addChild(toolbar, .{ .kind = .toggle, .role = .switch_control, .test_id = "b0", .width = 60.0 });
+    const b1 = try arena.addChild(toolbar, .{ .kind = .toggle, .role = .switch_control, .test_id = "b1", .width = 60.0 });
+    arena.layout(400.0, 400.0);
+
+    var router = events.EventRouter.init();
+
+    // Pointer click on disabled toggle/slider must NOT activate or change state
+    const t_off_r = arena.getRect(t_off).?;
+    router.dispatch(&arena, .{ .pointer_down = .{ .pointer_id = 0, .x = t_off_r.x + 10.0, .y = t_off_r.y + 10.0, .is_touch = true } });
+    router.dispatch(&arena, .{ .pointer_up = .{ .pointer_id = 0, .x = t_off_r.x + 10.0, .y = t_off_r.y + 10.0, .is_touch = true } });
+    try std.testing.expect(!arena.isChecked(t_off).?);
+    try std.testing.expectEqual(@as(?core.NodeId, null), router.focused_node);
+
+    const s_off_r = arena.getRect(s_off).?;
+    router.dispatch(&arena, .{ .pointer_down = .{ .pointer_id = 0, .x = s_off_r.x + s_off_r.w - 10.0, .y = s_off_r.y + 10.0, .is_touch = true } });
+    router.dispatch(&arena, .{ .pointer_up = .{ .pointer_id = 0, .x = s_off_r.x + s_off_r.w - 10.0, .y = s_off_r.y + 10.0, .is_touch = true } });
+    try std.testing.expectApproxEqAbs(@as(f32, 0.5), arena.getSliderValue(s_off).?, 0.001);
+    try std.testing.expectEqual(@as(usize, 0), router.pollEvents().len);
+
+    // Tab -> t_on; Space toggles t_on and emits .toggled
+    router.dispatch(&arena, .{ .key_down = .{ .key = .tab } });
+    try std.testing.expectEqual(@as(?core.NodeId, t_on), router.focused_node);
+    try std.testing.expect(router.focus.isFocusVisible());
+
+    router.dispatch(&arena, .{ .key_down = .{ .key = .space } });
+    try std.testing.expect(arena.isChecked(t_on).?);
+    try std.testing.expectEqual(@as(usize, 1), router.pollEvents().len);
+    try std.testing.expectEqualStrings("t.enabled", router.pollEvents()[0].toggled.test_id);
+    try std.testing.expect(router.pollEvents()[0].toggled.checked);
+    router.clearEvents();
+
+    // Tab skips t_off -> s_on; Right arrow steps slider +0.05, Left arrow steps -0.05
+    router.dispatch(&arena, .{ .key_down = .{ .key = .tab } });
+    try std.testing.expectEqual(@as(?core.NodeId, s_on), router.focused_node);
+    router.dispatch(&arena, .{ .key_down = .{ .key = .right } });
+    try std.testing.expectApproxEqAbs(@as(f32, 0.55), arena.getSliderValue(s_on).?, 0.001);
+    try std.testing.expectEqual(@as(usize, 1), router.pollEvents().len);
+    try std.testing.expectApproxEqAbs(@as(f32, 0.55), router.pollEvents()[0].changed_f32.value, 0.001);
+
+    router.dispatch(&arena, .{ .key_down = .{ .key = .down } });
+    try std.testing.expectApproxEqAbs(@as(f32, 0.50), arena.getSliderValue(s_on).?, 0.001);
+    router.clearEvents();
+
+    // Tab skips s_off -> enters roving toolbar at b0; Right moves to b1; Shift+Tab returns to s_on
+    router.dispatch(&arena, .{ .key_down = .{ .key = .tab } });
+    try std.testing.expectEqual(@as(?core.NodeId, b0), router.focused_node);
+    router.dispatch(&arena, .{ .key_down = .{ .key = .right } });
+    try std.testing.expectEqual(@as(?core.NodeId, b1), router.focused_node);
+    router.dispatch(&arena, .{ .key_down = .{ .key = .tab, .mods = .{ .shift = true } } });
+    try std.testing.expectEqual(@as(?core.NodeId, s_on), router.focused_node);
+}
+
+test "adversarial: trapped modal rejects outside pointer, disabled container/bar blocks bubbling, slider in roving group arrows" {
+    var arena = core.LayoutArena.init(std.testing.allocator);
+    defer arena.deinit();
+
+    const root = try arena.addNode(.{ .kind = .vstack, .role = .container, .padding = 10.0, .gap = 10.0 });
+    const outer_toggle = try arena.addChild(root, .{ .kind = .toggle, .role = .switch_control, .test_id = "outer.toggle", .height = 48.0, .checked = false });
+    const modal = try arena.addChild(root, .{ .kind = .vstack, .role = .container, .test_id = "modal", .height = 120.0 });
+    const m_toggle = try arena.addChild(modal, .{ .kind = .toggle, .role = .switch_control, .test_id = "modal.toggle", .height = 48.0, .checked = false });
+
+    const disabled_wrap = try arena.addChild(root, .{ .kind = .vstack, .role = .container, .disabled = true, .height = 48.0 });
+    const nested_toggle = try arena.addChild(disabled_wrap, .{ .kind = .toggle, .role = .switch_control, .test_id = "disabled_wrap.toggle", .height = 48.0, .checked = false });
+
+    const enabled_card = try arena.addChild(root, .{ .kind = .card, .role = .panel, .test_id = "enabled.card", .height = 48.0, .padding = 4.0, .fill = core.Nord.polar_night_1 });
+    const disabled_bar = try arena.addChild(enabled_card, .{ .kind = .bar, .role = .progress_bar, .test_id = "disabled.bar", .disabled = true, .fill = core.Nord.polar_night_2 });
+
+    const rg = try arena.addChild(root, .{ .kind = .hstack, .role = .container, .roving_group = true, .height = 48.0 });
+    const rg_btn = try arena.addChild(rg, .{ .kind = .toggle, .role = .switch_control, .test_id = "rg.btn", .width = 80.0 });
+    const rg_slider = try arena.addChild(rg, .{ .kind = .slider, .role = .slider, .test_id = "rg.slider", .width = 120.0, .slider_val = 0.5 });
+
+    arena.layout(400.0, 500.0);
+
+    var router = events.EventRouter.init();
+
+    // 1. Disabled ancestor container prevents clicking enabled child toggle
+    const nt_r = arena.getRect(nested_toggle).?;
+    router.dispatch(&arena, .{ .pointer_down = .{ .pointer_id = 0, .x = nt_r.x + 10.0, .y = nt_r.y + 10.0, .is_touch = true } });
+    router.dispatch(&arena, .{ .pointer_up = .{ .pointer_id = 0, .x = nt_r.x + 10.0, .y = nt_r.y + 10.0, .is_touch = true } });
+    try std.testing.expect(!arena.isChecked(nested_toggle).?);
+    try std.testing.expectEqual(@as(usize, 0), router.pollEvents().len);
+
+    // 2. Disabled .bar inside enabled .card must NOT bubble click to card
+    const db_r = arena.getRect(disabled_bar).?;
+    router.dispatch(&arena, .{ .pointer_down = .{ .pointer_id = 0, .x = db_r.x + 10.0, .y = db_r.y + 10.0, .is_touch = true } });
+    router.dispatch(&arena, .{ .pointer_up = .{ .pointer_id = 0, .x = db_r.x + 10.0, .y = db_r.y + 10.0, .is_touch = true } });
+    try std.testing.expectEqual(@as(usize, 0), router.pollEvents().len);
+
+    // 3. Trapped modal via pushFocusScope rejects pointer clicks outside modal
+    try router.pushFocusScope(&arena, modal, true);
+    try std.testing.expectEqual(@as(?core.NodeId, m_toggle), router.focused_node);
+
+    const ot_r = arena.getRect(outer_toggle).?;
+    router.dispatch(&arena, .{ .pointer_down = .{ .pointer_id = 0, .x = ot_r.x + 10.0, .y = ot_r.y + 10.0, .is_touch = true } });
+    router.dispatch(&arena, .{ .pointer_up = .{ .pointer_id = 0, .x = ot_r.x + 10.0, .y = ot_r.y + 10.0, .is_touch = true } });
+    try std.testing.expect(!arena.isChecked(outer_toggle).?);
+    try std.testing.expectEqual(@as(?core.NodeId, m_toggle), router.focused_node);
+    try std.testing.expectEqual(@as(usize, 0), router.pollEvents().len);
+
+    router.popFocusScope(&arena);
+    try std.testing.expectEqual(@as(?core.NodeId, null), router.focused_node);
+
+    // 4. Slider inside roving_group: Down moves from rg_btn -> rg_slider, Left/Right adjusts slider +-0.05, Up returns to rg_btn
+    router.focus.setFocusedByKeyboard(&arena, rg_btn);
+    router.dispatch(&arena, .{ .key_down = .{ .key = .down } });
+    try std.testing.expectEqual(@as(?core.NodeId, rg_slider), router.focused_node);
+
+    router.clearEvents();
+    router.dispatch(&arena, .{ .key_down = .{ .key = .right } });
+    try std.testing.expectEqual(@as(?core.NodeId, rg_slider), router.focused_node);
+    try std.testing.expectApproxEqAbs(@as(f32, 0.55), arena.getSliderValue(rg_slider).?, 0.001);
+    try std.testing.expectEqual(@as(usize, 1), router.pollEvents().len);
+    try std.testing.expectApproxEqAbs(@as(f32, 0.55), router.pollEvents()[0].changed_f32.value, 0.001);
+
+    router.dispatch(&arena, .{ .key_down = .{ .key = .up } });
+    try std.testing.expectEqual(@as(?core.NodeId, rg_btn), router.focused_node);
+}

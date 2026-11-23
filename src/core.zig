@@ -197,6 +197,10 @@ pub const NodeDesc = struct {
     accent: Color = Nord.frost_1,
     checked: bool = false,
     slider_val: f32 = 0.0,
+    disabled: bool = false,
+    focusable: ?bool = null,
+    roving_group: bool = false,
+    roving_active_child: ?NodeId = null,
 };
 
 pub const Node = struct {
@@ -225,6 +229,10 @@ pub const Node = struct {
     accent: Color = Nord.frost_1,
     checked: bool = false,
     slider_val: f32 = 0.0,
+    disabled: bool = false,
+    focusable: ?bool = null,
+    roving_group: bool = false,
+    roving_active_child: ?NodeId = null,
     rect: Rect = .{},
 };
 
@@ -304,6 +312,10 @@ pub const LayoutArena = struct {
             .accent = desc.accent,
             .checked = desc.checked,
             .slider_val = sanitizeUnit(desc.slider_val),
+            .disabled = desc.disabled,
+            .focusable = desc.focusable,
+            .roving_group = desc.roving_group,
+            .roving_active_child = desc.roving_active_child,
         });
         if (self.root_index == null) {
             self.root_index = idx;
@@ -477,6 +489,80 @@ pub const LayoutArena = struct {
         return .{ .index = p_idx, .gen = self.nodes.items(.gen)[p_idx] };
     }
 
+    pub fn getFirstChild(self: *const LayoutArena, id: NodeId) ?NodeId {
+        const idx = self.resolveIndex(id) orelse return null;
+        const c_idx = self.nodes.items(.first_child)[idx] orelse return null;
+        return .{ .index = c_idx, .gen = self.nodes.items(.gen)[c_idx] };
+    }
+
+    pub fn getNextSibling(self: *const LayoutArena, id: NodeId) ?NodeId {
+        const idx = self.resolveIndex(id) orelse return null;
+        const n_idx = self.nodes.items(.next_sibling)[idx] orelse return null;
+        return .{ .index = n_idx, .gen = self.nodes.items(.gen)[n_idx] };
+    }
+
+    pub fn getRoot(self: *const LayoutArena) ?NodeId {
+        const r_idx = self.root_index orelse return null;
+        return .{ .index = r_idx, .gen = self.nodes.items(.gen)[r_idx] };
+    }
+
+    pub fn isDescendantOrSelf(self: *const LayoutArena, ancestor: NodeId, node: NodeId) bool {
+        const anc_idx = self.resolveIndex(ancestor) orelse return false;
+        var cur_opt: ?u16 = self.resolveIndex(node) orelse return false;
+        const parents = self.nodes.items(.parent);
+        var steps: usize = 0;
+        while (cur_opt) |cur| : (steps += 1) {
+            if (cur == anc_idx) return true;
+            if (steps >= self.nodes.len) break;
+            cur_opt = parents[cur];
+        }
+        return false;
+    }
+
+    pub fn isEnabledTree(self: *const LayoutArena, id: NodeId) bool {
+        var cur_opt: ?u16 = self.resolveIndex(id) orelse return false;
+        const disabled_items = self.nodes.items(.disabled);
+        const parents = self.nodes.items(.parent);
+        const limit = self.nodes.len;
+        var steps: usize = 0;
+        while (cur_opt) |cur| : (steps += 1) {
+            if (steps >= limit) return false;
+            if (disabled_items[cur]) return false;
+            cur_opt = parents[cur];
+        }
+        return true;
+    }
+
+    pub fn isDisabled(self: *const LayoutArena, id: NodeId) bool {
+        const idx = self.resolveIndex(id) orelse return false;
+        _ = idx;
+        return !self.isEnabledTree(id);
+    }
+
+    pub fn isFocusable(self: *const LayoutArena, id: NodeId) bool {
+        const idx = self.resolveIndex(id) orelse return false;
+        if (!self.isEnabledTree(id)) return false;
+        const slice = self.nodes.slice();
+        if (slice.items(.focusable)[idx]) |f| return f;
+        const kind = slice.items(.kind)[idx];
+        return kind == .toggle or kind == .slider;
+    }
+
+    pub fn isRovingGroup(self: *const LayoutArena, id: NodeId) bool {
+        const idx = self.resolveIndex(id) orelse return false;
+        return self.nodes.items(.roving_group)[idx];
+    }
+
+    pub fn getRovingActiveChild(self: *const LayoutArena, id: NodeId) ?NodeId {
+        const idx = self.resolveIndex(id) orelse return null;
+        return self.nodes.items(.roving_active_child)[idx];
+    }
+
+    pub fn setRovingActiveChild(self: *LayoutArena, id: NodeId, child: ?NodeId) void {
+        const idx = self.resolveIndex(id) orelse return;
+        self.nodes.items(.roving_active_child)[idx] = child;
+    }
+
     pub fn isChecked(self: *const LayoutArena, id: NodeId) ?bool {
         const idx = self.resolveIndex(id) orelse return null;
         return self.nodes.items(.checked)[idx];
@@ -490,18 +576,19 @@ pub const LayoutArena = struct {
     pub fn toggleNode(self: *LayoutArena, id: NodeId) ?bool {
         const idx = self.resolveIndex(id) orelse return null;
         if (self.nodes.items(.kind)[idx] != .toggle) return null;
+        if (!self.isEnabledTree(id)) return null;
         const checked_items = self.nodes.items(.checked);
         checked_items[idx] = !checked_items[idx];
         self.redraw_needed = true;
         return checked_items[idx];
     }
 
-    pub fn setSliderFromX(self: *LayoutArena, id: NodeId, x: f32) ?f32 {
-        if (!std.math.isFinite(x)) return null;
+    pub fn setSliderValue(self: *LayoutArena, id: NodeId, value: f32) ?f32 {
+        if (!std.math.isFinite(value)) return null;
         const idx = self.resolveIndex(id) orelse return null;
         if (self.nodes.items(.kind)[idx] != .slider) return null;
-        const r = self.nodes.items(.rect)[idx];
-        const t = sliderValueFromX(r, x);
+        if (!self.isEnabledTree(id)) return null;
+        const t = sanitizeUnit(value);
         const slider_items = self.nodes.items(.slider_val);
         const is_endpoint = (t == 0.0 or t == 1.0) and slider_items[idx] != t;
         if (is_endpoint or @abs(slider_items[idx] - t) > 0.0005) {
@@ -509,6 +596,15 @@ pub const LayoutArena = struct {
             self.redraw_needed = true;
         }
         return slider_items[idx];
+    }
+
+    pub fn setSliderFromX(self: *LayoutArena, id: NodeId, x: f32) ?f32 {
+        if (!std.math.isFinite(x)) return null;
+        const idx = self.resolveIndex(id) orelse return null;
+        if (self.nodes.items(.kind)[idx] != .slider) return null;
+        if (!self.isEnabledTree(id)) return null;
+        const r = self.nodes.items(.rect)[idx];
+        return self.setSliderValue(id, sliderValueFromX(r, x));
     }
 
     pub fn needsRedraw(self: *const LayoutArena) bool {
@@ -950,13 +1046,14 @@ pub const LayoutArena = struct {
 
         const kind = slice.items(.kind)[idx];
         const gen = slice.items(.gen)[idx];
-        if (kind == .toggle) {
+        const enabled = self.isEnabledTree(.{ .index = idx, .gen = gen });
+        if (kind == .toggle and enabled) {
             const checked_items = slice.items(.checked);
             checked_items[idx] = !checked_items[idx];
             self.redraw_needed = true;
             return .{ .hit = .{ .index = idx, .gen = gen } };
         }
-        if (kind == .slider) {
+        if (kind == .slider and enabled) {
             const id = NodeId{ .index = idx, .gen = gen };
             slice.items(.slider_val)[idx] = sliderValueFromX(r, x);
             self.active_slider = id;

@@ -1,5 +1,6 @@
 const std = @import("std");
 const core = @import("core.zig");
+const focus_mod = @import("focus.zig");
 
 pub const PointerButton = enum {
     primary,
@@ -113,6 +114,8 @@ pub const EventRouter = struct {
     press_cancelled: bool = false,
     hovered_node: ?core.NodeId = null,
     focused_node: ?core.NodeId = null,
+    non_focusable_focus: ?core.NodeId = null,
+    focus: focus_mod.FocusManager = focus_mod.FocusManager.init(),
 
     pub fn init() EventRouter {
         return .{};
@@ -145,9 +148,36 @@ pub const EventRouter = struct {
         }
     }
 
+    pub fn pushFocusScope(self: *EventRouter, arena: *core.LayoutArena, container: core.NodeId, trap: bool) !void {
+        try self.focus.pushScope(arena, container, trap);
+        self.non_focusable_focus = null;
+        self.syncFocus();
+    }
+
+    pub fn popFocusScope(self: *EventRouter, arena: *core.LayoutArena) void {
+        self.focus.popScope(arena);
+        self.non_focusable_focus = null;
+        self.syncFocus();
+    }
+
+    fn syncFocus(self: *EventRouter) void {
+        if (self.focus.focused()) |id| {
+            self.non_focusable_focus = null;
+            self.focused_node = id;
+        } else {
+            self.focused_node = self.non_focusable_focus;
+        }
+    }
+
+    fn clearAllFocus(self: *EventRouter) void {
+        self.focus.clearFocus();
+        self.non_focusable_focus = null;
+        self.focused_node = null;
+    }
+
     fn validateHandles(self: *EventRouter, arena: *const core.LayoutArena) void {
         if (self.captured_node) |id| {
-            if (arena.getKind(id) == null) {
+            if (arena.getKind(id) == null or arena.isDisabled(id)) {
                 self.captured_node = null;
                 self.captured_pointer_id = null;
             }
@@ -156,7 +186,7 @@ pub const EventRouter = struct {
         }
 
         if (self.pressed_node) |id| {
-            if (arena.getKind(id) == null) {
+            if (arena.getKind(id) == null or arena.isDisabled(id)) {
                 self.pressed_node = null;
                 self.pressed_pointer_id = null;
                 self.press_cancelled = false;
@@ -172,9 +202,30 @@ pub const EventRouter = struct {
             }
         }
 
-        if (self.focused_node) |id| {
-            if (arena.getKind(id) == null) {
-                self.focused_node = null;
+        self.focus.validate(arena);
+        const has_trap = (self.focus.topTrappedContainer(arena) != null);
+        if (self.non_focusable_focus) |id| {
+            if (has_trap or
+                arena.getKind(id) == null or
+                !arena.isEnabledTree(id) or
+                arena.isFocusable(id) or
+                self.focus.focused() != null)
+            {
+                self.non_focusable_focus = null;
+            }
+        }
+        self.syncFocus();
+    }
+
+    fn stepFocusedSlider(self: *EventRouter, arena: *core.LayoutArena, fid: core.NodeId, delta: f32) void {
+        const prev = arena.getSliderValue(fid) orelse 0.0;
+        if (arena.setSliderValue(fid, prev + delta)) |val| {
+            if (val != prev) {
+                self.pushEvent(.{ .changed_f32 = .{
+                    .id = fid,
+                    .test_id = arena.getTestId(fid) orelse "",
+                    .value = val,
+                } });
             }
         }
     }
@@ -193,8 +244,12 @@ pub const EventRouter = struct {
     }
 
     fn resolvePressTarget(arena: *const core.LayoutArena, start_id: core.NodeId) ?core.NodeId {
+        const limit = arena.nodes.len;
         var cur_opt: ?core.NodeId = start_id;
-        while (cur_opt) |cur| {
+        var steps: usize = 0;
+        while (cur_opt) |cur| : (steps += 1) {
+            if (steps >= limit) return null;
+            if (arena.isDisabled(cur)) return null;
             const kind = arena.getKind(cur) orelse return null;
             switch (kind) {
                 .slider, .toggle, .card => return cur,
@@ -267,18 +322,33 @@ pub const EventRouter = struct {
                     self.press_cancelled = false;
                 }
 
+                const trap_c = self.focus.topTrappedContainer(arena);
                 const hit_id = arena.hitTest(pd.x, pd.y) orelse {
-                    self.focused_node = null;
+                    if (trap_c == null) self.clearAllFocus();
                     return;
                 };
                 const target_id = resolvePressTarget(arena, hit_id) orelse {
-                    self.focused_node = null;
+                    if (trap_c == null) self.clearAllFocus();
                     return;
                 };
+                if (trap_c) |tc| {
+                    if (!arena.isDescendantOrSelf(tc, target_id)) return;
+                }
+                if (arena.isDisabled(target_id)) {
+                    if (trap_c == null) self.clearAllFocus();
+                    return;
+                }
                 const kind = arena.getKind(target_id) orelse return;
                 switch (kind) {
                     .slider => {
-                        self.focused_node = target_id;
+                        if (arena.isFocusable(target_id)) {
+                            self.focus.setFocusedByPointer(arena, target_id);
+                            self.non_focusable_focus = null;
+                        } else if (trap_c == null) {
+                            self.focus.clearFocus();
+                            self.non_focusable_focus = null;
+                        }
+                        self.syncFocus();
                         self.captured_node = target_id;
                         self.captured_pointer_id = pd.pointer_id;
                         self.pressed_node = target_id;
@@ -288,8 +358,32 @@ pub const EventRouter = struct {
                         self.press_cancelled = false;
                         self.updateSlider(arena, target_id, pd.x);
                     },
-                    .toggle, .card => {
-                        self.focused_node = target_id;
+                    .toggle => {
+                        if (arena.isFocusable(target_id)) {
+                            self.focus.setFocusedByPointer(arena, target_id);
+                            self.non_focusable_focus = null;
+                        } else if (trap_c == null) {
+                            self.focus.clearFocus();
+                            self.non_focusable_focus = null;
+                        }
+                        self.syncFocus();
+                        self.pressed_node = target_id;
+                        self.pressed_pointer_id = pd.pointer_id;
+                        self.press_x = pd.x;
+                        self.press_y = pd.y;
+                        self.press_cancelled = false;
+                    },
+                    .card => {
+                        if (arena.isFocusable(target_id)) {
+                            self.focus.setFocusedByPointer(arena, target_id);
+                            self.non_focusable_focus = null;
+                        } else if (trap_c == null) {
+                            self.focus.clearFocus();
+                            self.non_focusable_focus = target_id;
+                        } else {
+                            self.non_focusable_focus = null;
+                        }
+                        self.syncFocus();
                         self.pressed_node = target_id;
                         self.pressed_pointer_id = pd.pointer_id;
                         self.press_x = pd.x;
@@ -297,7 +391,7 @@ pub const EventRouter = struct {
                         self.press_cancelled = false;
                     },
                     else => {
-                        self.focused_node = null;
+                        if (trap_c == null) self.clearAllFocus();
                     },
                 }
             },
@@ -383,10 +477,12 @@ pub const EventRouter = struct {
                             }
                         },
                         .card => {
-                            self.pushEvent(.{ .clicked = .{
-                                .id = target_id,
-                                .test_id = arena.getTestId(target_id) orelse "",
-                            } });
+                            if (!arena.isDisabled(target_id)) {
+                                self.pushEvent(.{ .clicked = .{
+                                    .id = target_id,
+                                    .test_id = arena.getTestId(target_id) orelse "",
+                                } });
+                            }
                         },
                         else => {},
                     }
@@ -436,6 +532,45 @@ pub const EventRouter = struct {
                         .id = fid,
                         .test_id = tid,
                     } });
+                } else if (kd.key == .tab) {
+                    if (kd.mods.shift) {
+                        _ = self.focus.focusPrev(arena);
+                    } else {
+                        _ = self.focus.focusNext(arena);
+                    }
+                    self.non_focusable_focus = null;
+                    self.syncFocus();
+                } else if (kd.key == .left or kd.key == .right or kd.key == .up or kd.key == .down) {
+                    const is_lr = (kd.key == .left or kd.key == .right);
+                    const is_focused_slider = if (self.focused_node) |fid|
+                        (arena.getKind(fid) == .slider and arena.isEnabledTree(fid))
+                    else
+                        false;
+
+                    if (is_focused_slider and is_lr) {
+                        const step: f32 = if (kd.key == .right) 0.05 else -0.05;
+                        self.stepFocusedSlider(arena, self.focused_node.?, step);
+                    } else if (self.focus.enclosingRovingGroup(arena) != null) {
+                        const delta: i32 = if (kd.key == .right or kd.key == .down) 1 else -1;
+                        _ = self.focus.moveInRovingGroup(arena, delta);
+                        self.non_focusable_focus = null;
+                        self.syncFocus();
+                    } else if (is_focused_slider) {
+                        const step: f32 = if (kd.key == .up) 0.05 else -0.05;
+                        self.stepFocusedSlider(arena, self.focused_node.?, step);
+                    }
+                } else if (kd.key == .space) {
+                    if (self.focused_node) |fid| {
+                        if (arena.getKind(fid) == .toggle) {
+                            if (arena.toggleNode(fid)) |checked| {
+                                self.pushEvent(.{ .toggled = .{
+                                    .id = fid,
+                                    .test_id = arena.getTestId(fid) orelse "",
+                                    .checked = checked,
+                                } });
+                            }
+                        }
+                    }
                 }
             },
             .key_up => {},
@@ -446,7 +581,7 @@ pub const EventRouter = struct {
                 self.pressed_node = null;
                 self.pressed_pointer_id = null;
                 self.press_cancelled = false;
-                self.focused_node = null;
+                self.clearAllFocus();
                 self.clearHover(arena);
             },
         }
