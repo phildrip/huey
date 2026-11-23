@@ -1,6 +1,12 @@
-# Huey
+<p align="center">
+  <img src="assets/huey-logo.png" alt="Huey logo" width="144" />
+</p>
 
-**A tiny, fast, data-oriented cross-platform GUI toolkit in Zig — desktop, mobile, wearables, and beyond.**
+<h1 align="center">Huey</h1>
+
+<p align="center">
+  <strong>A tiny, fast, data-oriented cross-platform GUI toolkit in Zig — desktop, mobile, wearables, and beyond.</strong>
+</p>
 
 > *~340 KB signed Android & Wear OS APKs · 60 Hz on a 2014 Nexus 9 & OnePlus Watch 3 · 0% idle CPU*
 > *Today: Linux Wayland, Android & Wear OS · Planned: macOS (Metal), Windows (D3D11), iOS & Web*

@@ -174,4 +174,9 @@ pub fn main(init: std.process.Init) !void {
         const wear_path = try std.fmt.bufPrint(&path_buf, "res-wear/{s}/ic_launcher.png", .{d.dir});
         try writeFile(wear_path, wear_png);
     }
+
+    // High-res repo logo for README / GitHub
+    const logo_png = try renderHueyIcon(alloc, 512, false);
+    defer alloc.free(logo_png);
+    try writeFile("assets/huey-logo.png", logo_png);
 }
