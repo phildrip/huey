@@ -1,6 +1,7 @@
 const std = @import("std");
+const huey = @import("huey");
 const stratifi = @import("stratifi_demo.zig");
-const core = @import("core.zig");
+const core = huey.core;
 
 test "StratifiShell: bar rendering produces workspace pills, active window, status chips, and atlas icons" {
     var shell = try stratifi.StratifiShell.init(std.testing.allocator);

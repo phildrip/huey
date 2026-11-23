@@ -123,10 +123,18 @@ while (huey_poll_event(ctx, &ev)) { /* handle ev.kind / ev.test_id */ }
 
 ## 6. Verification Commands
 - Run all unit tests: `zig build test`
-- Build & run the desktop shell prototype headlessly: `zig build && ./zig-out/bin/huey-stratifi --headless`
-- Run all unit tests + Android APK build/verify (`build/huey-showcase.apk`): `./build_apk.sh`
-- Run Wear OS tests + Wear APK build/verify (`build/huey-wear.apk`): `./build_wear_apk.sh`
+- Build & run the desktop shell prototype headlessly: `zig build stratifi-demo && ./zig-out/bin/huey-stratifi --headless`
+- Generate Android/Wear OS launcher icons and repo logo: `zig build gen-icons`
+- Run all unit tests + Android APK build/verify (`build/huey-showcase.apk`): `./demos/android-showcase/build_apk.sh`
+- Run Wear OS tests + Wear APK build/verify (`build/huey-wear.apk`): `./demos/wear-showcase/build_wear_apk.sh`
 - Run single module test in milliseconds: `zig test src/<module>_test.zig`
 - Deploy & visually verify on Android / Wear OS:
   `adb install -r build/huey-showcase.apk && adb shell am start -n dev.huey.showcase/android.app.NativeActivity`
   `adb install -r build/huey-wear.apk && adb shell am start -n dev.huey.wear/android.app.NativeActivity`
+
+## 7. Package & Directory Layout
+- `src/` — pure Huey library (`src/huey.zig`) and library `*_test.zig` suites
+- `demos/stratifi-bar/` — Linux Wayland status bar / launcher prototype (`@import("huey")`)
+- `demos/android-showcase/` — Android showcase app (`android_main.zig`, `showcase_scene.zig`, `res/`, `AndroidManifest.xml`, `build_apk.sh`)
+- `demos/wear-showcase/` — Wear OS circular showcase app (`wear_entry.zig`, `wear_showcase_scene.zig`, `res/`, `AndroidManifestWear.xml`, `build_wear_apk.sh`)
+- `tools/` — `gen_icons.zig` (`zig build gen-icons`)

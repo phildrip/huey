@@ -1,15 +1,18 @@
 const std = @import("std");
-const core = @import("core.zig");
-const events = @import("events.zig");
-const glyph_atlas = @import("glyph_atlas.zig");
-const renderer = @import("renderer.zig");
-const showcase_scene = @import("showcase_scene.zig");
-const virtual_scroll = @import("virtual_scroll.zig");
-const wearos = @import("wearos.zig");
-const android_platform = @import("android_platform.zig");
+const huey = @import("huey");
+const core = huey.core;
+const events = huey.events;
+const glyph_atlas = huey.glyph_atlas;
+const renderer = huey.renderer;
+const virtual_scroll = huey.virtual_scroll;
+const wearos = huey.wearos;
+const android_platform = huey.android_platform;
 
 const IS_WEAR: bool = @hasDecl(@import("root"), "WEAR_MODE") and @import("root").WEAR_MODE;
-const ActiveShowcase = if (IS_WEAR) @import("wear_showcase_scene.zig").WearShowcaseApp else showcase_scene.ShowcaseApp;
+const ActiveShowcase = if (IS_WEAR)
+    @import("wear_showcase").WearShowcaseApp
+else
+    @import("showcase_scene.zig").ShowcaseApp;
 const DEFAULT_LW: f32 = if (IS_WEAR) 233.0 else 768.0;
 const DEFAULT_LH: f32 = if (IS_WEAR) 233.0 else 1024.0;
 

@@ -1,8 +1,9 @@
 #!/usr/bin/env bash
 set -euo pipefail
 
-ROOT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
-cd "$ROOT_DIR"
+SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
+REPO_ROOT="$(cd "$SCRIPT_DIR/../.." && pwd)"
+cd "$REPO_ROOT"
 
 ZIG="${ZIG:-/home/phil/.local/bin/zig}"
 ANDROID_SDK="${ANDROID_SDK:-/home/phil/Android/Sdk}"
@@ -11,22 +12,22 @@ BUILD_TOOLS="${BUILD_TOOLS:-$ANDROID_SDK/build-tools/35.0.0}"
 PLATFORM_JAR="${PLATFORM_JAR:-$ANDROID_SDK/platforms/android-34/android.jar}"
 
 echo "[0/5] Running Wear OS showcase, theme & animation unit tests..."
-"$ZIG" test "$ROOT_DIR/src/theme_test.zig"
-"$ZIG" test "$ROOT_DIR/src/animation_test.zig"
-"$ZIG" test "$ROOT_DIR/src/wearos_test.zig"
-"$ZIG" test "$ROOT_DIR/src/wear_circular_test.zig"
-"$ZIG" test "$ROOT_DIR/src/hold_confirm_test.zig"
-"$ZIG" test "$ROOT_DIR/src/text_input_test.zig"
-"$ZIG" test "$ROOT_DIR/src/controls_test.zig"
-"$ZIG" test "$ROOT_DIR/src/primitives_test.zig"
-"$ZIG" test "$ROOT_DIR/src/android_platform_test.zig"
-"$ZIG" test "$ROOT_DIR/src/wear_showcase_scene_test.zig" -I"$ROOT_DIR/vendor" "$ROOT_DIR/src/stb_truetype_impl.c" -lc -lm
+"$ZIG" test "$REPO_ROOT/src/theme_test.zig"
+"$ZIG" test "$REPO_ROOT/src/animation_test.zig"
+"$ZIG" test "$REPO_ROOT/src/wearos_test.zig"
+"$ZIG" test "$REPO_ROOT/src/wear_circular_test.zig"
+"$ZIG" test "$REPO_ROOT/src/hold_confirm_test.zig"
+"$ZIG" test "$REPO_ROOT/src/text_input_test.zig"
+"$ZIG" test "$REPO_ROOT/src/controls_test.zig"
+"$ZIG" test "$REPO_ROOT/src/primitives_test.zig"
+"$ZIG" test "$REPO_ROOT/src/android_platform_test.zig"
+"$ZIG" test --dep huey -I"$REPO_ROOT/vendor" -lc -lm "$REPO_ROOT/src/stb_truetype_impl.c" -Mroot="$SCRIPT_DIR/wear_showcase_scene_test.zig" -Mhuey="$REPO_ROOT/src/huey.zig"
 
 SYSROOT_INC="$NDK/toolchains/llvm/prebuilt/linux-x86_64/sysroot/usr/include"
 TARGET_INC="$SYSROOT_INC/arm-linux-androideabi"
 NDK_LIBS="$NDK/toolchains/llvm/prebuilt/linux-x86_64/sysroot/usr/lib/arm-linux-androideabi/24"
 
-BUILD_DIR="$ROOT_DIR/build"
+BUILD_DIR="$REPO_ROOT/build"
 APK_STAGING="$BUILD_DIR/wear-apk"
 LIB_OUT="$APK_STAGING/lib/armeabi-v7a/libhuey.so"
 KEYSTORE="$BUILD_DIR/debug.keystore"
@@ -49,28 +50,41 @@ EOF
 
 echo "[1/5] Compiling libhuey.so (arm-linux-androideabi.24, ReleaseSmall)..."
 "$ZIG" build-lib \
-  -target arm-linux-androideabi.24 \
-  -O ReleaseSmall \
   -dynamic \
   -fPIC \
   -fstrip \
   --libc "$BUILD_DIR/android-wear-libc.txt" \
-  -I"$ROOT_DIR/vendor" \
+  -fsoname=libhuey.so \
+  -femit-bin="$LIB_OUT" \
+  -target arm-linux-androideabi.24 \
+  -O ReleaseSmall \
+  --dep android_main \
+  -I"$REPO_ROOT/vendor" \
   -I"$SYSROOT_INC" \
   -L"$NDK_LIBS" \
   -lc -lm -landroid -llog -lEGL -lGLESv3 \
-  -fsoname=libhuey.so \
-  -femit-bin="$LIB_OUT" \
-  "$ROOT_DIR/src/wear_entry.zig" \
-  "$ROOT_DIR/src/sokol_impl.c" \
-  "$ROOT_DIR/src/stb_truetype_impl.c"
+  "$REPO_ROOT/src/sokol_impl.c" \
+  "$REPO_ROOT/src/stb_truetype_impl.c" \
+  -Mroot="$SCRIPT_DIR/wear_entry.zig" \
+  -target arm-linux-androideabi.24 \
+  -O ReleaseSmall \
+  --dep huey \
+  --dep wear_showcase \
+  -Mandroid_main="$REPO_ROOT/demos/android-showcase/android_main.zig" \
+  -target arm-linux-androideabi.24 \
+  -O ReleaseSmall \
+  --dep huey \
+  -Mwear_showcase="$SCRIPT_DIR/wear_showcase_scene.zig" \
+  -target arm-linux-androideabi.24 \
+  -O ReleaseSmall \
+  -Mhuey="$REPO_ROOT/src/huey.zig"
 
 echo "[2/5] Compiling Wear OS resources & linking base APK with aapt2 (android-34)..."
 rm -f "$UNALIGNED_APK" "$ALIGNED_APK" "$FINAL_APK" "$BUILD_DIR/res-wear.zip"
-"$BUILD_TOOLS/aapt2" compile --dir "$ROOT_DIR/res-wear" -o "$BUILD_DIR/res-wear.zip"
+"$BUILD_TOOLS/aapt2" compile --dir "$SCRIPT_DIR/res" -o "$BUILD_DIR/res-wear.zip"
 "$BUILD_TOOLS/aapt2" link \
   -I "$PLATFORM_JAR" \
-  --manifest "$ROOT_DIR/AndroidManifestWear.xml" \
+  --manifest "$SCRIPT_DIR/AndroidManifestWear.xml" \
   -R "$BUILD_DIR/res-wear.zip" \
   -o "$UNALIGNED_APK"
 

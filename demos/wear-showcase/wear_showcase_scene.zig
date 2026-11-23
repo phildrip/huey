@@ -1,12 +1,13 @@
 const std = @import("std");
-const core = @import("core.zig");
-const events = @import("events.zig");
-const overlay = @import("overlay.zig");
-const wearos = @import("wearos.zig");
-const hold_confirm = @import("hold_confirm.zig");
-const glyph_atlas = @import("glyph_atlas.zig");
-const animation = @import("animation.zig");
-const android_platform = @import("android_platform.zig");
+const huey = @import("huey");
+const core = huey.core;
+const events = huey.events;
+const overlay = huey.overlay;
+const wearos = huey.wearos;
+const hold_confirm = huey.hold_confirm;
+const glyph_atlas = huey.glyph_atlas;
+const animation = huey.animation;
+const android_platform = huey.android_platform;
 
 pub const ACCENTS = [_][4]f32{
     core.Nord.frost_1, // #88C0D0 Nord Frost

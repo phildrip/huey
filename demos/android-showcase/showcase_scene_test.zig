@@ -1,13 +1,14 @@
 const std = @import("std");
-const core = @import("core.zig");
-const events = @import("events.zig");
-const overlay = @import("overlay.zig");
-const wearos = @import("wearos.zig");
-const glyph_atlas = @import("glyph_atlas.zig");
+const huey = @import("huey");
+const core = huey.core;
+const events = huey.events;
+const overlay = huey.overlay;
+const wearos = huey.wearos;
+const glyph_atlas = huey.glyph_atlas;
 const showcase = @import("showcase_scene.zig");
-const theme = @import("theme.zig");
-const controls = @import("widgets/controls.zig");
-const android_platform = @import("android_platform.zig");
+const theme = huey.theme;
+const controls = huey.widgets.controls;
+const android_platform = huey.android_platform;
 
 const HOST_FONT_PATH = "/usr/share/fonts/truetype/dejavu/DejaVuSans.ttf";
 

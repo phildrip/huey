@@ -5,15 +5,20 @@ pub fn build(b: *std.Build) void {
     const optimize = b.standardOptimizeOption(.{});
 
     // Public umbrella module: @import("huey")
-    _ = b.addModule("huey", .{
+    const huey_mod = b.addModule("huey", .{
         .root_source_file = b.path("src/huey.zig"),
+        .target = target,
+        .optimize = optimize,
     });
 
     // Main desktop shell prototype executable: huey-stratifi
     const stratifi_mod = b.createModule(.{
-        .root_source_file = b.path("src/stratifi_demo.zig"),
+        .root_source_file = b.path("demos/stratifi-bar/stratifi_demo.zig"),
         .target = target,
         .optimize = optimize,
+        .imports = &.{
+            .{ .name = "huey", .module = huey_mod },
+        },
     });
     const stratifi_exe = b.addExecutable(.{
         .name = "huey-stratifi",
@@ -31,12 +36,30 @@ pub fn build(b: *std.Build) void {
     const run_step = b.step("run", "Run huey-stratifi");
     run_step.dependOn(&run_cmd.step);
 
-    // Unified test step covering all unit test suites in src/
+    // Icon & logo generator tool: zig build gen-icons
+    const gen_icons_mod = b.createModule(.{
+        .root_source_file = b.path("tools/gen_icons.zig"),
+        .target = target,
+        .optimize = optimize,
+        .imports = &.{
+            .{ .name = "huey", .module = huey_mod },
+        },
+    });
+    const gen_icons_exe = b.addExecutable(.{
+        .name = "gen-icons",
+        .root_module = gen_icons_mod,
+    });
+    const gen_icons_run = b.addRunArtifact(gen_icons_exe);
+    const gen_icons_step = b.step("gen-icons", "Generate Android & Wear OS launcher icons and repo logo");
+    gen_icons_step.dependOn(&gen_icons_run.step);
+
+    // Unified test step covering all unit test suites in src/ and demos/
     const test_step = b.step("test", "Run all Huey unit test suites");
 
     const pure_test_suites = [_]struct {
         name: []const u8,
         path: []const u8,
+        needs_huey: bool = false,
     }{
         .{ .name = "core_test", .path = "src/core_test.zig" },
         .{ .name = "events_test", .path = "src/events_test.zig" },
@@ -68,7 +91,7 @@ pub fn build(b: *std.Build) void {
         .{ .name = "wayland_test", .path = "src/wayland_test.zig" },
         .{ .name = "animation_test", .path = "src/animation_test.zig" },
         .{ .name = "workbench_test", .path = "src/workbench_test.zig" },
-        .{ .name = "stratifi_demo_test", .path = "src/stratifi_demo_test.zig" },
+        .{ .name = "stratifi_demo_test", .path = "demos/stratifi-bar/stratifi_demo_test.zig", .needs_huey = true },
     };
 
     for (pure_test_suites) |suite| {
@@ -76,6 +99,9 @@ pub fn build(b: *std.Build) void {
             .root_source_file = b.path(suite.path),
             .target = target,
             .optimize = optimize,
+            .imports = if (suite.needs_huey) &.{
+                .{ .name = "huey", .module = huey_mod },
+            } else &.{},
         });
         const t = b.addTest(.{
             .name = suite.name,
@@ -103,10 +129,11 @@ pub fn build(b: *std.Build) void {
     const stb_test_suites = [_]struct {
         name: []const u8,
         path: []const u8,
+        needs_huey: bool = false,
     }{
         .{ .name = "glyph_atlas_test", .path = "src/glyph_atlas_test.zig" },
-        .{ .name = "showcase_scene_test", .path = "src/showcase_scene_test.zig" },
-        .{ .name = "wear_showcase_scene_test", .path = "src/wear_showcase_scene_test.zig" },
+        .{ .name = "showcase_scene_test", .path = "demos/android-showcase/showcase_scene_test.zig", .needs_huey = true },
+        .{ .name = "wear_showcase_scene_test", .path = "demos/wear-showcase/wear_showcase_scene_test.zig", .needs_huey = true },
     };
 
     for (stb_test_suites) |suite| {
@@ -115,6 +142,9 @@ pub fn build(b: *std.Build) void {
             .target = target,
             .optimize = optimize,
             .link_libc = true,
+            .imports = if (suite.needs_huey) &.{
+                .{ .name = "huey", .module = huey_mod },
+            } else &.{},
         });
         stb_mod.addIncludePath(b.path("vendor"));
         stb_mod.addCSourceFile(.{

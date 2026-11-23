@@ -1,12 +1,13 @@
 const std = @import("std");
-const core = @import("core.zig");
-const tokens = @import("tokens.zig");
-const wayland = @import("wayland.zig");
-const overlay = @import("overlay.zig");
-const multi_window = @import("multi_window.zig");
-const text_edit = @import("text_edit.zig");
-const focus = @import("focus.zig");
-const image_atlas = @import("image_atlas.zig");
+const huey = @import("huey");
+const core = huey.core;
+const tokens = huey.tokens;
+const wayland = huey.wayland;
+const overlay = huey.overlay;
+const multi_window = huey.multi_window;
+const text_edit = huey.text_edit;
+const focus = huey.focus;
+const image_atlas = huey.image_atlas;
 
 pub const WORKSPACE_COUNT: u8 = 5;
 pub const MAX_LAUNCHER_VISIBLE: usize = 6;

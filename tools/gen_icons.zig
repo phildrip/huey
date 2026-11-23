@@ -1,7 +1,8 @@
 const std = @import("std");
-const core = @import("core.zig");
-const headless = @import("headless.zig");
-const anim = @import("animation.zig");
+const huey = @import("huey");
+const core = huey.core;
+const headless = huey.headless;
+const anim = huey.animation;
 
 const DensitySpec = struct {
     dir: []const u8,
@@ -165,13 +166,13 @@ pub fn main(init: std.process.Init) !void {
         // Tablet / Phone showcase icon
         const tab_png = try renderHueyIcon(alloc, d.size, false);
         defer alloc.free(tab_png);
-        const tab_path = try std.fmt.bufPrint(&path_buf, "res/{s}/ic_launcher.png", .{d.dir});
+        const tab_path = try std.fmt.bufPrint(&path_buf, "demos/android-showcase/res/{s}/ic_launcher.png", .{d.dir});
         try writeFile(tab_path, tab_png);
 
         // Wear OS circular watch icon
         const wear_png = try renderHueyIcon(alloc, d.size, true);
         defer alloc.free(wear_png);
-        const wear_path = try std.fmt.bufPrint(&path_buf, "res-wear/{s}/ic_launcher.png", .{d.dir});
+        const wear_path = try std.fmt.bufPrint(&path_buf, "demos/wear-showcase/res/{s}/ic_launcher.png", .{d.dir});
         try writeFile(wear_path, wear_png);
     }
 

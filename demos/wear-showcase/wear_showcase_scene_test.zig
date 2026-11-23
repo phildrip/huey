@@ -1,8 +1,9 @@
 const std = @import("std");
-const core = @import("core.zig");
-const events = @import("events.zig");
-const wearos = @import("wearos.zig");
-const glyph_atlas = @import("glyph_atlas.zig");
+const huey = @import("huey");
+const core = huey.core;
+const events = huey.events;
+const wearos = huey.wearos;
+const glyph_atlas = huey.glyph_atlas;
 const wear_showcase = @import("wear_showcase_scene.zig");
 
 const HOST_FONT_PATH = "/usr/share/fonts/truetype/dejavu/DejaVuSans.ttf";
