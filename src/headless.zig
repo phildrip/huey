@@ -408,7 +408,7 @@ pub const HeadlessSession = struct {
                     .slider => core.Nord.aurora_yellow,
                     .bar => core.Nord.aurora_orange,
                     .card => core.Nord.aurora_purple,
-                    .vstack, .hstack, .zstack => core.Nord.aurora_red,
+                    .vstack, .hstack, .zstack, .grid => core.Nord.aurora_red,
                 };
                 drawOutlineRect(buf, phys_w, phys_h, pr, col);
             }
@@ -679,7 +679,7 @@ fn hitResolvesToTarget(arena: *const core.LayoutArena, hit_id: core.NodeId, targ
         if (cur.index == target_id.index and cur.gen == target_id.gen) return true;
         const kind = arena.getKind(cur) orelse return false;
         switch (kind) {
-            .bar, .vstack, .hstack, .zstack => cur_opt = arena.getParent(cur),
+            .bar, .vstack, .hstack, .zstack, .grid => cur_opt = arena.getParent(cur),
             .slider, .toggle, .card => return false,
         }
     }

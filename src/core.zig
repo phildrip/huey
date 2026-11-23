@@ -57,9 +57,35 @@ pub const Nord = struct {
     pub const transparent: Color = .{ 0.0, 0.0, 0.0, 0.0 };
 };
 
+pub const MAX_GRID_COLS: u16 = 64;
+
+fn sanitizeFinite(v: f32) f32 {
+    if (!std.math.isFinite(v)) return 0.0;
+    return v;
+}
+
 fn sanitizeNonNeg(v: f32) f32 {
     if (!std.math.isFinite(v) or v < 0.0) return 0.0;
     return v;
+}
+
+fn clampF32(v: f64) f32 {
+    if (!std.math.isFinite(v)) return 0.0;
+    const max_f: f64 = std.math.floatMax(f32);
+    const clamped = std.math.clamp(v, -max_f, max_f);
+    const f: f32 = @floatCast(clamped);
+    return if (std.math.isFinite(f)) f else 0.0;
+}
+
+fn clampDim(val: f32, min_v_raw: f32, max_v_raw: f32) f32 {
+    const min_v = sanitizeNonNeg(min_v_raw);
+    const max_v_san = sanitizeNonNeg(max_v_raw);
+    var v = sanitizeNonNeg(val);
+    if (max_v_san > 0.0) {
+        const eff_max = @max(min_v, max_v_san);
+        v = @min(v, eff_max);
+    }
+    return @max(v, min_v);
 }
 
 fn sanitizeUnit(v: f32) f32 {
@@ -157,10 +183,27 @@ pub fn snapRectToPhysical(r: Rect, scale: f32) Rect {
     };
 }
 
+pub const Justify = enum {
+    start,
+    center,
+    end,
+    space_between,
+    space_around,
+    space_evenly,
+};
+
+pub const Align = enum {
+    start,
+    center,
+    end,
+    stretch,
+};
+
 pub const NodeKind = enum {
     vstack,
     hstack,
     zstack,
+    grid,
     card,
     toggle,
     slider,
@@ -187,6 +230,19 @@ pub const NodeDesc = struct {
     width: f32 = 0,
     height: f32 = 0,
     flex: f32 = 1.0,
+    flex_shrink: f32 = 0.0,
+    min_width: f32 = 0.0,
+    max_width: f32 = 0.0,
+    min_height: f32 = 0.0,
+    max_height: f32 = 0.0,
+    justify: Justify = .start,
+    align_items: Align = .stretch,
+    flex_wrap: bool = false,
+    grid_cols: u16 = 0,
+    grid_col_gap: f32 = -1.0,
+    grid_row_gap: f32 = -1.0,
+    col_span: u16 = 1,
+    row_span: u16 = 1,
     padding: f32 = 0,
     gap: f32 = 0,
     corner_radius: f32 = 0,
@@ -201,6 +257,25 @@ pub const NodeDesc = struct {
     focusable: ?bool = null,
     roving_group: bool = false,
     roving_active_child: ?NodeId = null,
+};
+
+pub const FlexProps = struct {
+    flex_shrink: f32 = 0.0,
+    min_width: f32 = 0.0,
+    max_width: f32 = 0.0,
+    min_height: f32 = 0.0,
+    max_height: f32 = 0.0,
+    justify: Justify = .start,
+    align_items: Align = .stretch,
+    flex_wrap: bool = false,
+};
+
+pub const GridProps = struct {
+    grid_cols: u16 = 0,
+    grid_col_gap: f32 = -1.0,
+    grid_row_gap: f32 = -1.0,
+    col_span: u16 = 1,
+    row_span: u16 = 1,
 };
 
 pub const Node = struct {
@@ -219,6 +294,8 @@ pub const Node = struct {
     width: f32 = 0,
     height: f32 = 0,
     flex: f32 = 1.0,
+    flex_props: FlexProps = .{},
+    grid_props: GridProps = .{},
     padding: f32 = 0,
     gap: f32 = 0,
     corner_radius: f32 = 0,
@@ -262,6 +339,8 @@ pub const LayoutArena = struct {
     root_index: ?u16 = null,
     active_slider: ?NodeId = null,
     redraw_needed: bool = true,
+    layout_dirty: bool = true,
+    layout_eval_count: u64 = 0,
     viewport_w: f32 = 0,
     viewport_h: f32 = 0,
 
@@ -284,6 +363,7 @@ pub const LayoutArena = struct {
         self.root_index = null;
         self.active_slider = null;
         self.redraw_needed = true;
+        self.layout_dirty = true;
     }
 
     pub fn addNode(self: *LayoutArena, desc: NodeDesc) !NodeId {
@@ -302,6 +382,23 @@ pub const LayoutArena = struct {
             .width = sanitizeNonNeg(desc.width),
             .height = sanitizeNonNeg(desc.height),
             .flex = sanitizeNonNeg(desc.flex),
+            .flex_props = .{
+                .flex_shrink = sanitizeNonNeg(desc.flex_shrink),
+                .min_width = sanitizeNonNeg(desc.min_width),
+                .max_width = sanitizeNonNeg(desc.max_width),
+                .min_height = sanitizeNonNeg(desc.min_height),
+                .max_height = sanitizeNonNeg(desc.max_height),
+                .justify = desc.justify,
+                .align_items = desc.align_items,
+                .flex_wrap = desc.flex_wrap,
+            },
+            .grid_props = .{
+                .grid_cols = desc.grid_cols,
+                .grid_col_gap = if (std.math.isFinite(desc.grid_col_gap)) desc.grid_col_gap else -1.0,
+                .grid_row_gap = if (std.math.isFinite(desc.grid_row_gap)) desc.grid_row_gap else -1.0,
+                .col_span = desc.col_span,
+                .row_span = desc.row_span,
+            },
             .padding = sanitizeNonNeg(desc.padding),
             .gap = sanitizeNonNeg(desc.gap),
             .corner_radius = sanitizeNonNeg(desc.corner_radius),
@@ -321,6 +418,7 @@ pub const LayoutArena = struct {
             self.root_index = idx;
         }
         self.redraw_needed = true;
+        self.layout_dirty = true;
         return .{ .index = idx, .gen = gen };
     }
 
@@ -343,6 +441,7 @@ pub const LayoutArena = struct {
             last_children[p_idx] = c_idx;
         }
         self.redraw_needed = true;
+        self.layout_dirty = true;
         return child_id;
     }
 
@@ -355,8 +454,13 @@ pub const LayoutArena = struct {
     pub fn layout(self: *LayoutArena, viewport_w: f32, viewport_h: f32) void {
         const vw = sanitizeNonNeg(viewport_w);
         const vh = sanitizeNonNeg(viewport_h);
+        if (!self.layout_dirty and self.viewport_w == vw and self.viewport_h == vh) {
+            return;
+        }
         self.viewport_w = vw;
         self.viewport_h = vh;
+        self.layout_eval_count += 1;
+        self.layout_dirty = false;
         const root = self.root_index orelse return;
         self.nodes.items(.rect)[root] = .{
             .x = 0,
@@ -383,75 +487,785 @@ pub const LayoutArena = struct {
         const inner_w = @max(0.0, parent_rect.w - pad_x * 2.0);
         const inner_h = @max(0.0, parent_rect.h - pad_y * 2.0);
 
+        switch (kind) {
+            .zstack => self.layoutZStack(first_child, inner_x, inner_y, inner_w, inner_h),
+            .grid => self.layoutGrid(idx, first_child, inner_x, inner_y, inner_w, inner_h, gap),
+            else => self.layoutFlex(idx, first_child, kind == .hstack, inner_x, inner_y, inner_w, inner_h, gap),
+        }
+    }
+
+    fn layoutZStack(
+        self: *LayoutArena,
+        first_child: u16,
+        inner_x: f32,
+        inner_y: f32,
+        inner_w: f32,
+        inner_h: f32,
+    ) void {
+        const slice = self.nodes.slice();
+        const next_siblings = slice.items(.next_sibling);
+        const widths = slice.items(.width);
+        const heights = slice.items(.height);
+        const flex_props = slice.items(.flex_props);
+        const rects = slice.items(.rect);
+
+        var cur: ?u16 = first_child;
+        while (cur) |c| : (cur = next_siblings[c]) {
+            const w = sanitizeNonNeg(widths[c]);
+            const h = sanitizeNonNeg(heights[c]);
+            const fp = flex_props[c];
+            const cw = clampDim(if (w > 0.0) w else inner_w, fp.min_width, fp.max_width);
+            const ch = clampDim(if (h > 0.0) h else inner_h, fp.min_height, fp.max_height);
+            rects[c] = .{ .x = inner_x, .y = inner_y, .w = cw, .h = ch };
+            self.layoutChildren(c);
+        }
+    }
+
+    fn layoutFlex(
+        self: *LayoutArena,
+        idx: u16,
+        first_child: u16,
+        is_horizontal: bool,
+        inner_x: f32,
+        inner_y: f32,
+        inner_w: f32,
+        inner_h: f32,
+        gap: f32,
+    ) void {
+        const slice = self.nodes.slice();
+        const flex_props = slice.items(.flex_props);
+        const parent_fp = flex_props[idx];
+        const justify = parent_fp.justify;
+        const align_items = parent_fp.align_items;
+        const flex_wrap = parent_fp.flex_wrap;
+
+        const avail_main = if (is_horizontal) inner_w else inner_h;
+        const avail_cross = if (is_horizontal) inner_h else inner_w;
+        const inner_main = if (is_horizontal) inner_x else inner_y;
+        const inner_cross = if (is_horizontal) inner_y else inner_x;
+
+        if (!flex_wrap) {
+            self.layoutFlexLine(
+                first_child,
+                null,
+                is_horizontal,
+                justify,
+                align_items,
+                inner_main,
+                avail_main,
+                inner_cross,
+                avail_cross,
+                gap,
+            );
+            return;
+        }
+
+        const next_siblings = slice.items(.next_sibling);
+        const widths = slice.items(.width);
+        const heights = slice.items(.height);
+
+        // Pass 1: discover wrapped lines and track fixed vs auto-cross lines (zero heap alloc)
+        var line_count_total: usize = 0;
+        var auto_line_count: usize = 0;
+        var total_fixed_cross: f64 = 0.0;
+        var cur_opt: ?u16 = first_child;
+        while (cur_opt) |line_start| {
+            const s_fp = flex_props[line_start];
+            const s_raw_m = sanitizeNonNeg(if (is_horizontal) widths[line_start] else heights[line_start]);
+            const s_min_m = sanitizeNonNeg(if (is_horizontal) s_fp.min_width else s_fp.min_height);
+            const s_max_m = sanitizeNonNeg(if (is_horizontal) s_fp.max_width else s_fp.max_height);
+            var used_main: f64 = if (s_raw_m > 0.0)
+                clampDim(s_raw_m, s_min_m, s_max_m)
+            else
+                clampDim(0.0, s_min_m, s_max_m);
+
+            const s_raw_c = sanitizeNonNeg(if (is_horizontal) heights[line_start] else widths[line_start]);
+            const s_min_c = sanitizeNonNeg(if (is_horizontal) s_fp.min_height else s_fp.min_width);
+            const s_max_c = sanitizeNonNeg(if (is_horizontal) s_fp.max_height else s_fp.max_width);
+            var line_cross_size: f32 = clampDim(s_raw_c, s_min_c, s_max_c);
+
+            var line_end: ?u16 = null;
+            var scan = next_siblings[line_start];
+            while (scan) |c| {
+                const c_fp = flex_props[c];
+                const c_raw_m = sanitizeNonNeg(if (is_horizontal) widths[c] else heights[c]);
+                const c_min_m = sanitizeNonNeg(if (is_horizontal) c_fp.min_width else c_fp.min_height);
+                const c_max_m = sanitizeNonNeg(if (is_horizontal) c_fp.max_width else c_fp.max_height);
+                const c_hyp_m: f64 = if (c_raw_m > 0.0)
+                    clampDim(c_raw_m, c_min_m, c_max_m)
+                else
+                    clampDim(0.0, c_min_m, c_max_m);
+
+                if (used_main + @as(f64, gap) + c_hyp_m > @as(f64, avail_main) + 1e-4) {
+                    line_end = c;
+                    break;
+                }
+                used_main += @as(f64, gap) + c_hyp_m;
+
+                const c_raw_c = sanitizeNonNeg(if (is_horizontal) heights[c] else widths[c]);
+                const c_min_c = sanitizeNonNeg(if (is_horizontal) c_fp.min_height else c_fp.min_width);
+                const c_max_c = sanitizeNonNeg(if (is_horizontal) c_fp.max_height else c_fp.max_width);
+                line_cross_size = @max(line_cross_size, clampDim(c_raw_c, c_min_c, c_max_c));
+                scan = next_siblings[c];
+            }
+
+            line_count_total += 1;
+            if (line_cross_size > 0.0) {
+                total_fixed_cross += @as(f64, line_cross_size);
+            } else {
+                auto_line_count += 1;
+            }
+            cur_opt = line_end;
+        }
+
+        const total_line_gap: f64 = if (line_count_total > 1)
+            @as(f64, gap) * @as(f64, @floatFromInt(line_count_total - 1))
+        else
+            0.0;
+        const rem_cross: f64 = @max(0.0, @as(f64, avail_cross) - total_fixed_cross - total_line_gap);
+        const auto_line_cross: f32 = if (auto_line_count > 0)
+            clampF32(rem_cross / @as(f64, @floatFromInt(auto_line_count)))
+        else
+            0.0;
+
+        // Pass 2: lay out each wrapped line
+        var line_cross_pos: f64 = @as(f64, inner_cross);
+        cur_opt = first_child;
+        while (cur_opt) |line_start| {
+            const s_fp = flex_props[line_start];
+            const s_raw_m = sanitizeNonNeg(if (is_horizontal) widths[line_start] else heights[line_start]);
+            const s_min_m = sanitizeNonNeg(if (is_horizontal) s_fp.min_width else s_fp.min_height);
+            const s_max_m = sanitizeNonNeg(if (is_horizontal) s_fp.max_width else s_fp.max_height);
+            var used_main: f64 = if (s_raw_m > 0.0)
+                clampDim(s_raw_m, s_min_m, s_max_m)
+            else
+                clampDim(0.0, s_min_m, s_max_m);
+
+            const s_raw_c = sanitizeNonNeg(if (is_horizontal) heights[line_start] else widths[line_start]);
+            const s_min_c = sanitizeNonNeg(if (is_horizontal) s_fp.min_height else s_fp.min_width);
+            const s_max_c = sanitizeNonNeg(if (is_horizontal) s_fp.max_height else s_fp.max_width);
+            var line_cross_size: f32 = clampDim(s_raw_c, s_min_c, s_max_c);
+
+            var line_end: ?u16 = null;
+            var scan = next_siblings[line_start];
+            while (scan) |c| {
+                const c_fp = flex_props[c];
+                const c_raw_m = sanitizeNonNeg(if (is_horizontal) widths[c] else heights[c]);
+                const c_min_m = sanitizeNonNeg(if (is_horizontal) c_fp.min_width else c_fp.min_height);
+                const c_max_m = sanitizeNonNeg(if (is_horizontal) c_fp.max_width else c_fp.max_height);
+                const c_hyp_m: f64 = if (c_raw_m > 0.0)
+                    clampDim(c_raw_m, c_min_m, c_max_m)
+                else
+                    clampDim(0.0, c_min_m, c_max_m);
+
+                if (used_main + @as(f64, gap) + c_hyp_m > @as(f64, avail_main) + 1e-4) {
+                    line_end = c;
+                    break;
+                }
+                used_main += @as(f64, gap) + c_hyp_m;
+
+                const c_raw_c = sanitizeNonNeg(if (is_horizontal) heights[c] else widths[c]);
+                const c_min_c = sanitizeNonNeg(if (is_horizontal) c_fp.min_height else c_fp.min_width);
+                const c_max_c = sanitizeNonNeg(if (is_horizontal) c_fp.max_height else c_fp.max_width);
+                line_cross_size = @max(line_cross_size, clampDim(c_raw_c, c_min_c, c_max_c));
+                scan = next_siblings[c];
+            }
+
+            const eff_line_cross = if (line_cross_size > 0.0)
+                line_cross_size
+            else if (align_items == .stretch)
+                auto_line_cross
+            else
+                0.0;
+
+            self.layoutFlexLine(
+                line_start,
+                line_end,
+                is_horizontal,
+                justify,
+                align_items,
+                inner_main,
+                avail_main,
+                clampF32(line_cross_pos),
+                eff_line_cross,
+                gap,
+            );
+            line_cross_pos += @as(f64, eff_line_cross) + @as(f64, gap);
+            cur_opt = line_end;
+        }
+    }
+
+    fn layoutFlexLine(
+        self: *LayoutArena,
+        line_start: u16,
+        line_end: ?u16,
+        is_horizontal: bool,
+        justify: Justify,
+        align_items: Align,
+        inner_main: f32,
+        avail_main: f32,
+        line_cross_pos: f32,
+        line_cross_size: f32,
+        gap: f32,
+    ) void {
+        const slice = self.nodes.slice();
         const next_siblings = slice.items(.next_sibling);
         const widths = slice.items(.width);
         const heights = slice.items(.height);
         const flexes = slice.items(.flex);
+        const flex_props = slice.items(.flex_props);
         const rects = slice.items(.rect);
 
-        if (kind == .zstack) {
-            var cur: ?u16 = first_child;
-            while (cur) |c| : (cur = next_siblings[c]) {
-                const w = sanitizeNonNeg(widths[c]);
-                const h = sanitizeNonNeg(heights[c]);
-                const cw = if (w > 0.0) w else inner_w;
-                const ch = if (h > 0.0) h else inner_h;
-                rects[c] = .{ .x = inner_x, .y = inner_y, .w = cw, .h = ch };
-                self.layoutChildren(c);
+        var line_count: usize = 0;
+        var fixed_main: f64 = 0.0;
+        var total_flex: f64 = 0.0;
+        var cur: ?u16 = line_start;
+        while (cur != line_end) : (cur = next_siblings[cur.?]) {
+            const c = cur.?;
+            line_count += 1;
+            const fp = flex_props[c];
+            const raw_m = sanitizeNonNeg(if (is_horizontal) widths[c] else heights[c]);
+            if (raw_m > 0.0) {
+                const min_m = sanitizeNonNeg(if (is_horizontal) fp.min_width else fp.min_height);
+                const max_m = sanitizeNonNeg(if (is_horizontal) fp.max_width else fp.max_height);
+                fixed_main += @as(f64, clampDim(raw_m, min_m, max_m));
+            } else {
+                total_flex += @as(f64, sanitizeNonNeg(flexes[c]));
             }
-            return;
+        }
+        if (line_count == 0) return;
+
+        const avail_main_64: f64 = @as(f64, sanitizeNonNeg(avail_main));
+        const gap_64: f64 = @as(f64, sanitizeNonNeg(gap));
+        const total_gap: f64 = if (line_count > 1) gap_64 * @as(f64, @floatFromInt(line_count - 1)) else 0.0;
+        const rem_for_flex: f64 = @max(0.0, avail_main_64 - fixed_main - total_gap);
+        const valid_flex = std.math.isFinite(total_flex) and total_flex > 0.0;
+
+        var total_used: f64 = 0.0;
+        cur = line_start;
+        while (cur != line_end) : (cur = next_siblings[cur.?]) {
+            const c = cur.?;
+            const fp = flex_props[c];
+            const raw_m = sanitizeNonNeg(if (is_horizontal) widths[c] else heights[c]);
+            const min_m = sanitizeNonNeg(if (is_horizontal) fp.min_width else fp.min_height);
+            const max_m = sanitizeNonNeg(if (is_horizontal) fp.max_width else fp.max_height);
+            const fl: f64 = @as(f64, sanitizeNonNeg(flexes[c]));
+            const target: f64 = if (raw_m > 0.0)
+                @as(f64, raw_m)
+            else if (valid_flex)
+                rem_for_flex * (fl / total_flex)
+            else
+                0.0;
+            const m = clampDim(clampF32(target), min_m, max_m);
+            if (is_horizontal) rects[c].w = m else rects[c].h = m;
+            total_used += @as(f64, m);
         }
 
-        const is_horizontal = (kind == .hstack);
+        // Freeze min-clamped flex children and redistribute remaining space
+        if (valid_flex) {
+            var min_iter: usize = 0;
+            while (min_iter < line_count and std.math.isFinite(total_used) and total_used + total_gap > avail_main_64 + 1e-4) : (min_iter += 1) {
+                var frozen_main: f64 = fixed_main;
+                var active_flex: f64 = 0.0;
+                var any_frozen = false;
+                cur = line_start;
+                while (cur != line_end) : (cur = next_siblings[cur.?]) {
+                    const c = cur.?;
+                    const raw_m = sanitizeNonNeg(if (is_horizontal) widths[c] else heights[c]);
+                    if (raw_m > 0.0) continue;
+                    const fp = flex_props[c];
+                    const min_m = sanitizeNonNeg(if (is_horizontal) fp.min_width else fp.min_height);
+                    const cur_m = if (is_horizontal) rects[c].w else rects[c].h;
+                    if (min_m > 0.0 and cur_m <= min_m + 1e-5) {
+                        frozen_main += @as(f64, cur_m);
+                        any_frozen = true;
+                    } else {
+                        active_flex += @as(f64, sanitizeNonNeg(flexes[c]));
+                    }
+                }
+                if (!any_frozen or !std.math.isFinite(active_flex) or active_flex <= 0.0) break;
+                const rem_after: f64 = @max(0.0, avail_main_64 - frozen_main - total_gap);
+                var new_total: f64 = 0.0;
+                cur = line_start;
+                while (cur != line_end) : (cur = next_siblings[cur.?]) {
+                    const c = cur.?;
+                    var cur_m = if (is_horizontal) rects[c].w else rects[c].h;
+                    const raw_m = sanitizeNonNeg(if (is_horizontal) widths[c] else heights[c]);
+                    if (raw_m == 0.0) {
+                        const fp = flex_props[c];
+                        const min_m = sanitizeNonNeg(if (is_horizontal) fp.min_width else fp.min_height);
+                        const max_m = sanitizeNonNeg(if (is_horizontal) fp.max_width else fp.max_height);
+                        const fl: f64 = @as(f64, sanitizeNonNeg(flexes[c]));
+                        if (!(min_m > 0.0 and cur_m <= min_m + 1e-5)) {
+                            cur_m = clampDim(clampF32(rem_after * (fl / active_flex)), min_m, max_m);
+                            if (is_horizontal) rects[c].w = cur_m else rects[c].h = cur_m;
+                        }
+                    }
+                    new_total += @as(f64, cur_m);
+                }
+                if (@abs(new_total - total_used) <= 1e-6) break;
+                total_used = new_total;
+            }
+        }
 
-        var count: usize = 0;
-        var fixed_main: f32 = 0;
-        var total_flex: f32 = 0;
+        // Redistribute remaining space if any flex child was capped by max_main
+        // Skip items frozen at min_m unless their uncapped share of the non-max budget exceeds min_m.
+        if (valid_flex) {
+            var grow_iter: usize = 0;
+            while (grow_iter < line_count and std.math.isFinite(total_used) and total_used + total_gap + 1e-4 < avail_main_64) : (grow_iter += 1) {
+                const free: f64 = avail_main_64 - total_gap - total_used;
+                var non_max_budget: f64 = avail_main_64 - total_gap - fixed_main;
+                var non_max_flex: f64 = 0.0;
+                cur = line_start;
+                while (cur != line_end) : (cur = next_siblings[cur.?]) {
+                    const c = cur.?;
+                    const raw_m = sanitizeNonNeg(if (is_horizontal) widths[c] else heights[c]);
+                    if (raw_m > 0.0) continue;
+                    const fl: f64 = @as(f64, sanitizeNonNeg(flexes[c]));
+                    if (fl <= 0.0) continue;
+                    const fp = flex_props[c];
+                    const min_m = sanitizeNonNeg(if (is_horizontal) fp.min_width else fp.min_height);
+                    const max_m = sanitizeNonNeg(if (is_horizontal) fp.max_width else fp.max_height);
+                    const cur_m = if (is_horizontal) rects[c].w else rects[c].h;
+                    if (max_m > 0.0 and cur_m >= @max(min_m, max_m) - 1e-5) {
+                        non_max_budget -= @as(f64, cur_m);
+                    } else {
+                        non_max_flex += fl;
+                    }
+                }
+
+                var active_flex: f64 = 0.0;
+                cur = line_start;
+                while (cur != line_end) : (cur = next_siblings[cur.?]) {
+                    const c = cur.?;
+                    const raw_m = sanitizeNonNeg(if (is_horizontal) widths[c] else heights[c]);
+                    if (raw_m > 0.0) continue;
+                    const fl: f64 = @as(f64, sanitizeNonNeg(flexes[c]));
+                    if (fl <= 0.0) continue;
+                    const fp = flex_props[c];
+                    const min_m = sanitizeNonNeg(if (is_horizontal) fp.min_width else fp.min_height);
+                    const max_m = sanitizeNonNeg(if (is_horizontal) fp.max_width else fp.max_height);
+                    const cur_m = if (is_horizontal) rects[c].w else rects[c].h;
+                    if (max_m > 0.0 and cur_m >= @max(min_m, max_m) - 1e-5) continue;
+                    if (min_m > 0.0 and cur_m <= min_m + 1e-5) {
+                        const uncapped: f64 = if (std.math.isFinite(non_max_flex) and non_max_flex > 0.0)
+                            @max(0.0, non_max_budget) * (fl / non_max_flex)
+                        else
+                            0.0;
+                        if (uncapped <= @as(f64, min_m) + 1e-5) continue;
+                    }
+                    active_flex += fl;
+                }
+                if (!std.math.isFinite(active_flex) or active_flex <= 0.0) break;
+
+                var new_total: f64 = 0.0;
+                cur = line_start;
+                while (cur != line_end) : (cur = next_siblings[cur.?]) {
+                    const c = cur.?;
+                    var cur_m = if (is_horizontal) rects[c].w else rects[c].h;
+                    const raw_m = sanitizeNonNeg(if (is_horizontal) widths[c] else heights[c]);
+                    const fl: f64 = @as(f64, sanitizeNonNeg(flexes[c]));
+                    if (raw_m == 0.0 and fl > 0.0) {
+                        const fp = flex_props[c];
+                        const min_m = sanitizeNonNeg(if (is_horizontal) fp.min_width else fp.min_height);
+                        const max_m = sanitizeNonNeg(if (is_horizontal) fp.max_width else fp.max_height);
+                        const at_max = (max_m > 0.0 and cur_m >= @max(min_m, max_m) - 1e-5);
+                        var min_frozen = false;
+                        if (min_m > 0.0 and cur_m <= min_m + 1e-5) {
+                            const uncapped: f64 = if (std.math.isFinite(non_max_flex) and non_max_flex > 0.0)
+                                @max(0.0, non_max_budget) * (fl / non_max_flex)
+                            else
+                                0.0;
+                            min_frozen = (uncapped <= @as(f64, min_m) + 1e-5);
+                        }
+                        if (!at_max and !min_frozen) {
+                            const next_m = @as(f64, cur_m) + free * (fl / active_flex);
+                            cur_m = clampDim(clampF32(next_m), min_m, max_m);
+                            if (is_horizontal) rects[c].w = cur_m else rects[c].h = cur_m;
+                        }
+                    }
+                    new_total += @as(f64, cur_m);
+                }
+                if (@abs(new_total - total_used) <= 1e-6) break;
+                total_used = new_total;
+            }
+        }
+
+        // Shrink proportionally to flex_shrink when demand exceeds avail_main (in f64 to prevent f32 Inf/NaN)
+        var shrink_iter: usize = 0;
+        while (shrink_iter <= line_count and std.math.isFinite(total_used) and std.math.isFinite(total_gap) and total_used + total_gap > avail_main_64 + 1e-4) : (shrink_iter += 1) {
+            const overflow: f64 = (total_used + total_gap) - avail_main_64;
+            if (!std.math.isFinite(overflow) or overflow <= 0.0) break;
+            var active_shrink: f64 = 0.0;
+            cur = line_start;
+            while (cur != line_end) : (cur = next_siblings[cur.?]) {
+                const c = cur.?;
+                const fp = flex_props[c];
+                const sh: f64 = @as(f64, sanitizeNonNeg(fp.flex_shrink));
+                if (sh <= 0.0) continue;
+                const min_m = sanitizeNonNeg(if (is_horizontal) fp.min_width else fp.min_height);
+                const cur_m = if (is_horizontal) rects[c].w else rects[c].h;
+                if (cur_m > min_m + 1e-5) {
+                    active_shrink += sh;
+                }
+            }
+            if (!std.math.isFinite(active_shrink) or active_shrink <= 0.0) break;
+
+            var new_total: f64 = 0.0;
+            cur = line_start;
+            while (cur != line_end) : (cur = next_siblings[cur.?]) {
+                const c = cur.?;
+                var cur_m = if (is_horizontal) rects[c].w else rects[c].h;
+                const fp = flex_props[c];
+                const sh: f64 = @as(f64, sanitizeNonNeg(fp.flex_shrink));
+                const min_m = sanitizeNonNeg(if (is_horizontal) fp.min_width else fp.min_height);
+                const max_m = sanitizeNonNeg(if (is_horizontal) fp.max_width else fp.max_height);
+                if (sh > 0.0 and cur_m > min_m + 1e-5) {
+                    const delta: f64 = overflow * (sh / active_shrink);
+                    const reduced: f64 = @max(0.0, @as(f64, cur_m) - delta);
+                    cur_m = clampDim(clampF32(reduced), min_m, max_m);
+                    if (is_horizontal) rects[c].w = cur_m else rects[c].h = cur_m;
+                }
+                new_total += @as(f64, cur_m);
+            }
+            if (@abs(new_total - total_used) <= 1e-6) break;
+            total_used = new_total;
+        }
+
+        const rem_justify: f64 = @max(0.0, avail_main_64 - total_used - total_gap);
+        var main_cursor: f64 = @as(f64, sanitizeFinite(inner_main));
+        var extra_gap: f64 = 0.0;
+        const n_f: f64 = @floatFromInt(line_count);
+        switch (justify) {
+            .start => {},
+            .center => main_cursor += rem_justify * 0.5,
+            .end => main_cursor += rem_justify,
+            .space_between => {
+                if (line_count > 1) {
+                    extra_gap = rem_justify / @as(f64, @floatFromInt(line_count - 1));
+                }
+            },
+            .space_around => {
+                const slot = rem_justify / n_f;
+                main_cursor += slot * 0.5;
+                extra_gap = slot;
+            },
+            .space_evenly => {
+                const slot = rem_justify / (n_f + 1.0);
+                main_cursor += slot;
+                extra_gap = slot;
+            },
+        }
+
+        cur = line_start;
+        while (cur != line_end) : (cur = next_siblings[cur.?]) {
+            const c = cur.?;
+            const fp = flex_props[c];
+            const child_main = sanitizeNonNeg(if (is_horizontal) rects[c].w else rects[c].h);
+            const raw_c = sanitizeNonNeg(if (is_horizontal) heights[c] else widths[c]);
+            const min_c = sanitizeNonNeg(if (is_horizontal) fp.min_height else fp.min_width);
+            const max_c = sanitizeNonNeg(if (is_horizontal) fp.max_height else fp.max_width);
+
+            const child_cross = if (raw_c > 0.0)
+                clampDim(raw_c, min_c, max_c)
+            else if (align_items == .stretch)
+                clampDim(line_cross_size, min_c, max_c)
+            else
+                clampDim(0.0, min_c, max_c);
+
+            const cross_offset: f64 = switch (align_items) {
+                .start, .stretch => 0.0,
+                .center => (@as(f64, line_cross_size) - @as(f64, child_cross)) * 0.5,
+                .end => @as(f64, line_cross_size) - @as(f64, child_cross),
+            };
+
+            const main_pos_f32 = clampF32(main_cursor);
+            const cross_pos_f32 = clampF32(@as(f64, sanitizeFinite(line_cross_pos)) + cross_offset);
+
+            if (is_horizontal) {
+                rects[c] = .{
+                    .x = main_pos_f32,
+                    .y = cross_pos_f32,
+                    .w = child_main,
+                    .h = child_cross,
+                };
+            } else {
+                rects[c] = .{
+                    .x = cross_pos_f32,
+                    .y = main_pos_f32,
+                    .w = child_cross,
+                    .h = child_main,
+                };
+            }
+            main_cursor += @as(f64, child_main) + gap_64 + extra_gap;
+            self.layoutChildren(c);
+        }
+    }
+
+    const GridPlacement = struct {
+        col: u16,
+        row: usize,
+        span: u16,
+        r_span: u16,
+    };
+
+    const GridCursor = struct {
+        cols: u16,
+        col: u16 = 0,
+        row: usize = 0,
+        busy: [MAX_GRID_COLS]u16 = [_]u16{0} ** MAX_GRID_COLS,
+
+        fn nextRow(self: *GridCursor) void {
+            self.row += 1;
+            self.col = 0;
+            const lim = @min(self.cols, MAX_GRID_COLS);
+            for (0..lim) |k| {
+                if (self.busy[k] > 0) self.busy[k] -= 1;
+            }
+        }
+
+        fn canFitAt(self: *const GridCursor, start_col: u16, span: u16) bool {
+            if (start_col >= self.cols or span > self.cols - start_col) return false;
+            var k: u16 = 0;
+            while (k < span) : (k += 1) {
+                const c = start_col + k;
+                if (c < MAX_GRID_COLS and self.busy[c] > 0) return false;
+            }
+            return true;
+        }
+
+        fn place(self: *GridCursor, c_span_raw: u16, r_span_raw: u16) GridPlacement {
+            const span = @min(@max(1, c_span_raw), self.cols);
+            const r_span = @max(1, r_span_raw);
+            while (true) {
+                while (self.col < self.cols and self.col < MAX_GRID_COLS and self.busy[self.col] > 0) {
+                    self.col += 1;
+                }
+                if (self.col >= self.cols or span > self.cols - self.col) {
+                    self.nextRow();
+                    continue;
+                }
+                if (self.canFitAt(self.col, span)) {
+                    const placed_col = self.col;
+                    const placed_row = self.row;
+                    if (r_span > 1) {
+                        var k: u16 = 0;
+                        while (k < span) : (k += 1) {
+                            const idx_k = placed_col + k;
+                            if (idx_k < MAX_GRID_COLS) {
+                                self.busy[idx_k] = r_span;
+                            }
+                        }
+                    }
+                    self.col += span;
+                    return .{ .col = placed_col, .row = placed_row, .span = span, .r_span = r_span };
+                }
+                self.col += 1;
+            }
+        }
+    };
+
+    fn scanGridRowHeight(
+        gc: *GridCursor,
+        cur_opt: *?u16,
+        row_idx: usize,
+        auto_row_h: f32,
+        next_siblings: []const ?u16,
+        heights: []const f32,
+        flex_props: []const FlexProps,
+        grid_props: []const GridProps,
+    ) struct { row_h: f32, row_end: ?u16 } {
+        var row_has_fixed = false;
+        var row_fixed_h: f32 = 0.0;
+        var row_min_h: f32 = 0.0;
+        var row_end: ?u16 = null;
+        var scan_opt = cur_opt.*;
+        while (scan_opt) |sc| : (scan_opt = next_siblings[sc]) {
+            var gc_peek = gc.*;
+            const p_peek = gc_peek.place(grid_props[sc].col_span, grid_props[sc].row_span);
+            if (p_peek.row > row_idx) {
+                row_end = sc;
+                break;
+            }
+            gc.* = gc_peek;
+            if (p_peek.r_span == 1) {
+                const raw_h = sanitizeNonNeg(heights[sc]);
+                const fp = flex_props[sc];
+                if (raw_h > 0.0) {
+                    row_has_fixed = true;
+                    row_fixed_h = @max(row_fixed_h, clampDim(raw_h, fp.min_height, fp.max_height));
+                } else {
+                    row_min_h = @max(row_min_h, clampDim(0.0, fp.min_height, fp.max_height));
+                }
+            }
+        }
+        cur_opt.* = row_end;
+        const base_h = if (row_has_fixed) row_fixed_h else auto_row_h;
+        return .{ .row_h = @max(base_h, row_min_h), .row_end = row_end };
+    }
+
+    fn layoutGrid(
+        self: *LayoutArena,
+        idx: u16,
+        first_child: u16,
+        inner_x: f32,
+        inner_y: f32,
+        inner_w: f32,
+        inner_h: f32,
+        gap: f32,
+    ) void {
+        const slice = self.nodes.slice();
+        const flex_props = slice.items(.flex_props);
+        const grid_props = slice.items(.grid_props);
+        const parent_gp = grid_props[idx];
+        const cols: u16 = std.math.clamp(parent_gp.grid_cols, 1, MAX_GRID_COLS);
+        const col_gap = if (std.math.isFinite(parent_gp.grid_col_gap) and parent_gp.grid_col_gap >= 0.0) parent_gp.grid_col_gap else gap;
+        const row_gap = if (std.math.isFinite(parent_gp.grid_row_gap) and parent_gp.grid_row_gap >= 0.0) parent_gp.grid_row_gap else gap;
+        const align_items = flex_props[idx].align_items;
+
+        const cols_f: f64 = @floatFromInt(cols);
+        const col_w_64: f64 = @max(0.0, (@as(f64, inner_w) - @as(f64, col_gap) * (cols_f - 1.0)) / cols_f);
+        const col_w: f32 = clampF32(col_w_64);
+
+        const next_siblings = slice.items(.next_sibling);
+        const heights = slice.items(.height);
+        const rects = slice.items(.rect);
+
+        // Pass 1: discover row count, fixed row heights (raw_h > 0), and auto row count (zero heap alloc)
+        var gc1 = GridCursor{ .cols = cols };
+        var cur_row: usize = 0;
+        var cur_row_has_fixed = false;
+        var cur_row_fixed_h: f32 = 0.0;
+        var total_fixed_row_h: f64 = 0.0;
+        var auto_row_count: usize = 0;
+        var total_rows: usize = 0;
 
         var cur: ?u16 = first_child;
         while (cur) |c| : (cur = next_siblings[c]) {
-            count += 1;
-            const main_dim = sanitizeNonNeg(if (is_horizontal) widths[c] else heights[c]);
-            if (main_dim > 0.0) {
-                fixed_main += main_dim;
+            const gp = grid_props[c];
+            const fp = flex_props[c];
+            const p = gc1.place(gp.col_span, gp.row_span);
+            while (cur_row < p.row) {
+                if (cur_row_has_fixed) {
+                    total_fixed_row_h += @as(f64, cur_row_fixed_h);
+                } else {
+                    auto_row_count += 1;
+                }
+                cur_row += 1;
+                cur_row_has_fixed = false;
+                cur_row_fixed_h = 0.0;
+            }
+            total_rows = @max(total_rows, p.row + p.r_span);
+            if (p.r_span == 1) {
+                const raw_h = sanitizeNonNeg(heights[c]);
+                if (raw_h > 0.0) {
+                    cur_row_has_fixed = true;
+                    cur_row_fixed_h = @max(cur_row_fixed_h, clampDim(raw_h, fp.min_height, fp.max_height));
+                }
+            }
+        }
+        if (total_rows > 0) {
+            if (cur_row_has_fixed) {
+                total_fixed_row_h += @as(f64, cur_row_fixed_h);
             } else {
-                total_flex += sanitizeNonNeg(flexes[c]);
+                auto_row_count += 1;
+            }
+            cur_row += 1;
+            while (cur_row < total_rows) : (cur_row += 1) {
+                auto_row_count += 1;
             }
         }
 
-        const total_gap = if (count > 1) gap * @as(f32, @floatFromInt(count - 1)) else 0.0;
-        const avail_main = if (is_horizontal) inner_w else inner_h;
-        const rem_main = @max(0.0, avail_main - fixed_main - total_gap);
-        const valid_flex = std.math.isFinite(total_flex) and total_flex > 0.0;
+        const total_row_gap: f64 = if (total_rows > 1)
+            @as(f64, row_gap) * @as(f64, @floatFromInt(total_rows - 1))
+        else
+            0.0;
+        const rem_h: f64 = @max(0.0, @as(f64, inner_h) - total_fixed_row_h - total_row_gap);
+        const auto_row_h: f32 = if (auto_row_count > 0)
+            clampF32(rem_h / @as(f64, @floatFromInt(auto_row_count)))
+        else
+            0.0;
 
-        var cursor = if (is_horizontal) inner_x else inner_y;
-        cur = first_child;
-        while (cur) |c| : (cur = next_siblings[c]) {
-            const w = sanitizeNonNeg(widths[c]);
-            const h = sanitizeNonNeg(heights[c]);
-            const fl = sanitizeNonNeg(flexes[c]);
-            if (is_horizontal) {
-                const cw = if (w > 0.0)
-                    w
-                else if (valid_flex)
-                    rem_main * (fl / total_flex)
+        // Pass 2: place children row by row, summing actual spanned row heights for row_span > 1
+        var gc = GridCursor{ .cols = cols };
+        var row_y: f64 = @as(f64, sanitizeFinite(inner_y));
+        var cur_opt: ?u16 = first_child;
+        var row_idx: usize = 0;
+        while (cur_opt != null) {
+            var gc_scan = gc;
+            var scan_after_row = cur_opt;
+            const row_info = scanGridRowHeight(
+                &gc_scan,
+                &scan_after_row,
+                row_idx,
+                auto_row_h,
+                next_siblings,
+                heights,
+                flex_props,
+                grid_props,
+            );
+            const row_h = row_info.row_h;
+            const row_end = row_info.row_end;
+
+            while (cur_opt != row_end) {
+                const c = cur_opt.?;
+                const gp = grid_props[c];
+                const fp = flex_props[c];
+                const p = gc.place(gp.col_span, gp.row_span);
+                const span_f: f64 = @floatFromInt(p.span);
+                const col_f: f64 = @floatFromInt(p.col);
+                const raw_w: f64 = @as(f64, col_w) * span_f + @as(f64, col_gap) * (span_f - 1.0);
+                const cw = clampDim(clampF32(raw_w), fp.min_width, fp.max_width);
+
+                var avail_cell_h_64: f64 = @as(f64, row_h);
+                if (p.r_span > 1) {
+                    var gc_fwd = gc_scan;
+                    var fwd_opt = scan_after_row;
+                    var r_off: u16 = 1;
+                    while (r_off < p.r_span) : (r_off += 1) {
+                        gc_fwd.nextRow();
+                        const next_info = scanGridRowHeight(
+                            &gc_fwd,
+                            &fwd_opt,
+                            row_idx + r_off,
+                            auto_row_h,
+                            next_siblings,
+                            heights,
+                            flex_props,
+                            grid_props,
+                        );
+                        avail_cell_h_64 += @as(f64, row_gap) + @as(f64, next_info.row_h);
+                    }
+                }
+                const avail_cell_h = clampF32(avail_cell_h_64);
+
+                const raw_h = sanitizeNonNeg(heights[c]);
+                const ch = if (raw_h > 0.0)
+                    clampDim(raw_h, fp.min_height, fp.max_height)
+                else if (align_items == .stretch)
+                    clampDim(avail_cell_h, fp.min_height, fp.max_height)
                 else
-                    0.0;
-                const ch = if (h > 0.0) @min(h, inner_h) else inner_h;
-                rects[c] = .{ .x = cursor, .y = inner_y, .w = cw, .h = ch };
-                cursor += cw + gap;
-            } else {
-                const cw = if (w > 0.0) @min(w, inner_w) else inner_w;
-                const ch = if (h > 0.0)
-                    h
-                else if (valid_flex)
-                    rem_main * (fl / total_flex)
-                else
-                    0.0;
-                rects[c] = .{ .x = inner_x, .y = cursor, .w = cw, .h = ch };
-                cursor += ch + gap;
+                    clampDim(0.0, fp.min_height, fp.max_height);
+
+                const cross_offset: f64 = switch (align_items) {
+                    .start, .stretch => 0.0,
+                    .center => (@as(f64, avail_cell_h) - @as(f64, ch)) * 0.5,
+                    .end => @as(f64, avail_cell_h) - @as(f64, ch),
+                };
+
+                rects[c] = .{
+                    .x = clampF32(@as(f64, sanitizeFinite(inner_x)) + col_f * (@as(f64, col_w) + @as(f64, col_gap))),
+                    .y = clampF32(row_y + cross_offset),
+                    .w = cw,
+                    .h = ch,
+                };
+                self.layoutChildren(c);
+                cur_opt = next_siblings[c];
             }
-            self.layoutChildren(c);
+
+            row_y += @as(f64, row_h) + @as(f64, row_gap);
+            row_idx += 1;
+            gc.nextRow();
         }
     }
 
@@ -705,7 +1519,7 @@ pub const LayoutArena = struct {
 
         if (rect.w > 0.0 and rect.h > 0.0) {
             switch (kind) {
-                .vstack, .hstack, .zstack, .card => {
+                .vstack, .hstack, .zstack, .grid, .card => {
                     if (fill[3] > 0.0 or bw > 0.0) {
                         const phys = snapRectToPhysical(rect, scale);
                         pushQuad(out_buf, count, .{

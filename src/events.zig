@@ -253,7 +253,7 @@ pub const EventRouter = struct {
             const kind = arena.getKind(cur) orelse return null;
             switch (kind) {
                 .slider, .toggle, .card => return cur,
-                .bar, .vstack, .hstack, .zstack => cur_opt = arena.getParent(cur),
+                .bar, .vstack, .hstack, .zstack, .grid => cur_opt = arena.getParent(cur),
             }
         }
         return null;
