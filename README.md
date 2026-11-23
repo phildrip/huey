@@ -1,8 +1,9 @@
 # Huey
 
-**A tiny, fast, data-oriented GUI toolkit in Zig — for Linux Wayland, Android, and Wear OS.**
+**A tiny, fast, data-oriented cross-platform GUI toolkit in Zig — desktop, mobile, wearables, and beyond.**
 
 > *~340 KB signed Android & Wear OS APKs · 60 Hz on a 2014 Nexus 9 & OnePlus Watch 3 · 0% idle CPU*
+> *Today: Linux Wayland, Android & Wear OS · Planned: macOS (Metal), Windows (D3D11), iOS & Web*
 
 ---
 
@@ -26,7 +27,7 @@ Huey solves five everyday GUI problems:
 2. **Zero-Tick Sleep.** If nothing is moving, the app does nothing.
 3. **Flat Data, Not Deep Objects.** Structure-of-Arrays (`LayoutArena`), zero per-frame heap churn, O(log N) virtual scrolling (`SumTree`).
 4. **Perceptual Color & Real Physics.** Oklab palettes + closed-form damped springs, never hardcoded themes.
-5. **Native Everywhere That Matters.** Pure-Zig Wayland (`zwlr_layer_shell_v1` / `xdg_shell`), Android, and natively circular Wear OS (round SDF clip, curved scroll scaling, rotary crown, OLED ambient mode), plus a thin C ABI ([`include/huey.h`](include/huey.h)).
+5. **Native Everywhere.** Built on `sokol_gfx` so one core targets every GPU backend — running today on pure-Zig Wayland (`zwlr_layer_shell_v1` / `xdg_shell`), Android, and natively circular Wear OS, with macOS/Metal, Windows/D3D11, iOS, and Web next, plus a thin C ABI ([`include/huey.h`](include/huey.h)).
 6. **Built for Humans & Agents.** Flat APIs, declarative JSON scenes, and deterministic headless verification — no custom scripting DSL.
 
 Read the full version in [`docs/MANIFESTO_v2.2.md`](docs/MANIFESTO_v2.2.md) and the API cookbook in [`SKILL.md`](SKILL.md).
