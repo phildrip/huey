@@ -413,6 +413,22 @@ pub const LayoutArena = struct {
         return self.nodes.items(.rect)[idx];
     }
 
+    pub fn getKind(self: *const LayoutArena, id: NodeId) ?NodeKind {
+        const idx = self.resolveIndex(id) orelse return null;
+        return self.nodes.items(.kind)[idx];
+    }
+
+    pub fn getTestId(self: *const LayoutArena, id: NodeId) ?[]const u8 {
+        const idx = self.resolveIndex(id) orelse return null;
+        return self.nodes.items(.test_id)[idx];
+    }
+
+    pub fn getParent(self: *const LayoutArena, id: NodeId) ?NodeId {
+        const idx = self.resolveIndex(id) orelse return null;
+        const p_idx = self.nodes.items(.parent)[idx] orelse return null;
+        return .{ .index = p_idx, .gen = self.nodes.items(.gen)[p_idx] };
+    }
+
     pub fn isChecked(self: *const LayoutArena, id: NodeId) ?bool {
         const idx = self.resolveIndex(id) orelse return null;
         return self.nodes.items(.checked)[idx];
@@ -421,6 +437,30 @@ pub const LayoutArena = struct {
     pub fn getSliderValue(self: *const LayoutArena, id: NodeId) ?f32 {
         const idx = self.resolveIndex(id) orelse return null;
         return self.nodes.items(.slider_val)[idx];
+    }
+
+    pub fn toggleNode(self: *LayoutArena, id: NodeId) ?bool {
+        const idx = self.resolveIndex(id) orelse return null;
+        if (self.nodes.items(.kind)[idx] != .toggle) return null;
+        const checked_items = self.nodes.items(.checked);
+        checked_items[idx] = !checked_items[idx];
+        self.redraw_needed = true;
+        return checked_items[idx];
+    }
+
+    pub fn setSliderFromX(self: *LayoutArena, id: NodeId, x: f32) ?f32 {
+        if (!std.math.isFinite(x)) return null;
+        const idx = self.resolveIndex(id) orelse return null;
+        if (self.nodes.items(.kind)[idx] != .slider) return null;
+        const r = self.nodes.items(.rect)[idx];
+        const t = sliderValueFromX(r, x);
+        const slider_items = self.nodes.items(.slider_val);
+        const is_endpoint = (t == 0.0 or t == 1.0) and slider_items[idx] != t;
+        if (is_endpoint or @abs(slider_items[idx] - t) > 0.0005) {
+            slider_items[idx] = t;
+            self.redraw_needed = true;
+        }
+        return slider_items[idx];
     }
 
     pub fn needsRedraw(self: *const LayoutArena) bool {
@@ -802,6 +842,43 @@ pub const LayoutArena = struct {
 
     fn rectContains(r: Rect, x: f32, y: f32) bool {
         return r.w > 0.0 and r.h > 0.0 and x >= r.x and x <= r.x + r.w and y >= r.y and y <= r.y + r.h;
+    }
+
+    fn hitTestChildrenReversePure(self: *const LayoutArena, child_opt: ?u16, x: f32, y: f32) ?NodeId {
+        const c = child_opt orelse return null;
+        const next = self.nodes.items(.next_sibling)[c];
+        if (next) |n| {
+            if (self.hitTestChildrenReversePure(n, x, y)) |res| return res;
+        }
+        return self.hitTestNodePure(c, x, y);
+    }
+
+    fn hitTestNodePure(self: *const LayoutArena, idx: u16, x: f32, y: f32) ?NodeId {
+        const first_child = self.nodes.items(.first_child)[idx];
+        if (self.hitTestChildrenReversePure(first_child, x, y)) |res| {
+            return res;
+        }
+
+        const slice = self.nodes.slice();
+        const r = slice.items(.rect)[idx];
+        if (!rectContains(r, x, y)) return null;
+
+        const kind = slice.items(.kind)[idx];
+        const gen = slice.items(.gen)[idx];
+        const fill = slice.items(.fill)[idx];
+        const bw = sanitizeNonNeg(slice.items(.border_width)[idx]);
+        const border = slice.items(.border)[idx];
+        const is_bordered_card = (kind == .card and bw > 0.0 and border[3] > 0.0);
+        if (kind == .toggle or kind == .slider or fill[3] > 0.0 or is_bordered_card) {
+            return .{ .index = idx, .gen = gen };
+        }
+        return null;
+    }
+
+    pub fn hitTest(self: *const LayoutArena, x: f32, y: f32) ?NodeId {
+        if (!std.math.isFinite(x) or !std.math.isFinite(y)) return null;
+        const root = self.root_index orelse return null;
+        return self.hitTestNodePure(root, x, y);
     }
 
     fn hitTestChildrenReverse(self: *LayoutArena, child_opt: ?u16, x: f32, y: f32) ?HitResult {

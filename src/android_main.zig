@@ -1,5 +1,6 @@
 const std = @import("std");
 const core = @import("core.zig");
+const events = @import("events.zig");
 const glyph_atlas = @import("glyph_atlas.zig");
 const renderer = @import("renderer.zig");
 
@@ -277,6 +278,68 @@ fn signalRedrawAck(state: *AppState) void {
     _ = c.pthread_mutex_unlock(&state.mutex);
 }
 
+const MouseButtonTracker = struct {
+    const Entry = struct {
+        active: bool = false,
+        pointer_id: i32 = 0,
+        button: events.PointerButton = .primary,
+    };
+    entries: [8]Entry = [_]Entry{.{}} ** 8,
+
+    fn buttonFromEvent(ev: *const c.AInputEvent, is_touch: bool) events.PointerButton {
+        if (is_touch) return .primary;
+        const state = c.AMotionEvent_getButtonState(ev);
+        if ((state & c.AMOTION_EVENT_BUTTON_SECONDARY) != 0) return .secondary;
+        if ((state & c.AMOTION_EVENT_BUTTON_TERTIARY) != 0) return .middle;
+        return .primary;
+    }
+
+    fn recordDown(self: *MouseButtonTracker, pointer_id: i32, btn: events.PointerButton) void {
+        var free_idx: ?usize = null;
+        for (&self.entries, 0..) |*e, i| {
+            if (e.active and e.pointer_id == pointer_id) {
+                e.button = btn;
+                return;
+            }
+            if (!e.active and free_idx == null) {
+                free_idx = i;
+            }
+        }
+        if (free_idx) |idx| {
+            self.entries[idx] = .{
+                .active = true,
+                .pointer_id = pointer_id,
+                .button = btn,
+            };
+        }
+    }
+
+    fn takeUp(self: *MouseButtonTracker, pointer_id: i32) events.PointerButton {
+        for (&self.entries) |*e| {
+            if (e.active and e.pointer_id == pointer_id) {
+                const btn = e.button;
+                e.active = false;
+                return btn;
+            }
+        }
+        return .primary;
+    }
+
+    fn remove(self: *MouseButtonTracker, pointer_id: i32) void {
+        for (&self.entries) |*e| {
+            if (e.active and e.pointer_id == pointer_id) {
+                e.active = false;
+            }
+        }
+    }
+
+    fn clear(self: *MouseButtonTracker) void {
+        for (&self.entries) |*e| {
+            e.active = false;
+        }
+    }
+};
+
 fn workerMain(arg: ?*anyopaque) callconv(.c) ?*anyopaque {
     const state: *AppState = @ptrCast(@alignCast(arg.?));
 
@@ -344,7 +407,10 @@ fn workerMain(arg: ?*anyopaque) callconv(.c) ?*anyopaque {
     var rend: renderer.Renderer = .{};
     var window: ?*c.ANativeWindow = null;
     var input_queue: ?*c.AInputQueue = null;
-    var active_pointer_id: ?i32 = null;
+    var router = events.EventRouter.init();
+    var mouse_buttons: MouseButtonTracker = .{};
+    var last_logged_slider_id: ?core.NodeId = null;
+    var last_logged_slider_val: f32 = -1.0;
     var dumped_initial_tree = false;
     var frame_idx: u64 = 0;
 
@@ -356,16 +422,17 @@ fn workerMain(arg: ?*anyopaque) callconv(.c) ?*anyopaque {
     var quit = false;
     while (!quit) {
         const has_surface = (window != null and egl.surface != c.EGL_NO_SURFACE and rend.initialized);
-        const timeout_ms: c_int = if (has_surface and arena.needsRedraw()) 0 else -1;
+        const has_pending_input = if (input_queue) |q| (c.AInputQueue_hasEvents(q) > 0) else false;
+        const timeout_ms: c_int = if ((has_surface and arena.needsRedraw()) or has_pending_input) 0 else -1;
 
-        var events: c_int = 0;
+        var looper_events: c_int = 0;
         var out_data: ?*anyopaque = null;
-        var ident = c.ALooper_pollOnce(timeout_ms, null, &events, &out_data);
+        var ident = c.ALooper_pollOnce(timeout_ms, null, &looper_events, &out_data);
 
         var drain_passes: usize = 0;
         while (ident >= 0 and !quit) {
             if (ident == LOOPER_ID_MAIN) {
-                if ((events & (c.ALOOPER_EVENT_ERROR | c.ALOOPER_EVENT_HANGUP)) != 0) {
+                if ((looper_events & (c.ALOOPER_EVENT_ERROR | c.ALOOPER_EVENT_HANGUP)) != 0) {
                     quit = true;
                     break;
                 }
@@ -418,8 +485,8 @@ fn workerMain(arg: ?*anyopaque) callconv(.c) ?*anyopaque {
                         .term_window => {
                             rend.deinit();
                             egl.deinit();
-                            active_pointer_id = null;
-                            arena.handlePointerUp();
+                            mouse_buttons.clear();
+                            router.dispatch(&arena, .focus_lost);
 
                             _ = c.pthread_mutex_lock(&state.mutex);
                             window = null;
@@ -464,8 +531,8 @@ fn workerMain(arg: ?*anyopaque) callconv(.c) ?*anyopaque {
                             if (new_q) |q| {
                                 c.AInputQueue_attachLooper(q, looper, LOOPER_ID_INPUT, null, null);
                             }
-                            active_pointer_id = null;
-                            arena.handlePointerUp();
+                            mouse_buttons.clear();
+                            router.dispatch(&arena, .focus_lost);
                             state.input_ack = true;
                             _ = c.pthread_cond_broadcast(&state.cond);
                             _ = c.pthread_mutex_unlock(&state.mutex);
@@ -483,8 +550,8 @@ fn workerMain(arg: ?*anyopaque) callconv(.c) ?*anyopaque {
                             }
                         },
                         .cancel_pointer => {
-                            active_pointer_id = null;
-                            arena.handlePointerUp();
+                            mouse_buttons.clear();
+                            router.dispatch(&arena, .focus_lost);
                         },
                         .destroy => {
                             quit = true;
@@ -493,7 +560,7 @@ fn workerMain(arg: ?*anyopaque) callconv(.c) ?*anyopaque {
                     }
                 }
             } else if (ident == LOOPER_ID_INPUT) {
-                if ((events & (c.ALOOPER_EVENT_ERROR | c.ALOOPER_EVENT_HANGUP)) != 0) {
+                if ((looper_events & (c.ALOOPER_EVENT_ERROR | c.ALOOPER_EVENT_HANGUP)) != 0) {
                     if (input_queue) |q| {
                         c.AInputQueue_detachLooper(q);
                         input_queue = null;
@@ -519,49 +586,135 @@ fn workerMain(arg: ?*anyopaque) callconv(.c) ?*anyopaque {
                             switch (action) {
                                 c.AMOTION_EVENT_ACTION_DOWN => {
                                     if (ptr_count > 0) {
-                                        active_pointer_id = c.AMotionEvent_getPointerId(ev, 0);
+                                        const pid = c.AMotionEvent_getPointerId(ev, 0);
                                         const px = c.AMotionEvent_getX(ev, 0) / scale_factor;
                                         const py = c.AMotionEvent_getY(ev, 0) / scale_factor;
-                                        _ = arena.handlePointerDown(px, py);
+                                        const is_touch = c.AMotionEvent_getToolType(ev, 0) != c.AMOTION_EVENT_TOOL_TYPE_MOUSE;
+                                        const btn = MouseButtonTracker.buttonFromEvent(ev, is_touch);
+                                        if (!is_touch) mouse_buttons.recordDown(pid, btn);
+                                        router.dispatch(&arena, .{ .pointer_down = .{
+                                            .pointer_id = pid,
+                                            .x = px,
+                                            .y = py,
+                                            .button = btn,
+                                            .is_touch = is_touch,
+                                        } });
                                         handled = 1;
                                     }
                                 },
                                 c.AMOTION_EVENT_ACTION_POINTER_DOWN => {
-                                    if (active_pointer_id == null and ptr_idx < ptr_count) {
-                                        active_pointer_id = c.AMotionEvent_getPointerId(ev, ptr_idx);
+                                    if (ptr_idx < ptr_count) {
+                                        const pid = c.AMotionEvent_getPointerId(ev, ptr_idx);
                                         const px = c.AMotionEvent_getX(ev, ptr_idx) / scale_factor;
                                         const py = c.AMotionEvent_getY(ev, ptr_idx) / scale_factor;
-                                        _ = arena.handlePointerDown(px, py);
+                                        const is_touch = c.AMotionEvent_getToolType(ev, ptr_idx) != c.AMOTION_EVENT_TOOL_TYPE_MOUSE;
+                                        const btn = MouseButtonTracker.buttonFromEvent(ev, is_touch);
+                                        if (!is_touch) mouse_buttons.recordDown(pid, btn);
+                                        router.dispatch(&arena, .{ .pointer_down = .{
+                                            .pointer_id = pid,
+                                            .x = px,
+                                            .y = py,
+                                            .button = btn,
+                                            .is_touch = is_touch,
+                                        } });
                                         handled = 1;
                                     }
                                 },
                                 c.AMOTION_EVENT_ACTION_MOVE => {
-                                    if (active_pointer_id) |aid| {
-                                        var i: usize = 0;
-                                        while (i < ptr_count) : (i += 1) {
-                                            if (c.AMotionEvent_getPointerId(ev, i) == aid) {
-                                                const px = c.AMotionEvent_getX(ev, i) / scale_factor;
-                                                const py = c.AMotionEvent_getY(ev, i) / scale_factor;
-                                                _ = arena.handlePointerMove(px, py);
-                                                handled = 1;
-                                                break;
-                                            }
-                                        }
+                                    var i: usize = 0;
+                                    while (i < ptr_count) : (i += 1) {
+                                        const pid = c.AMotionEvent_getPointerId(ev, i);
+                                        const px = c.AMotionEvent_getX(ev, i) / scale_factor;
+                                        const py = c.AMotionEvent_getY(ev, i) / scale_factor;
+                                        const is_touch = c.AMotionEvent_getToolType(ev, i) != c.AMOTION_EVENT_TOOL_TYPE_MOUSE;
+                                        router.dispatch(&arena, .{ .pointer_move = .{
+                                            .pointer_id = pid,
+                                            .x = px,
+                                            .y = py,
+                                            .is_touch = is_touch,
+                                        } });
                                     }
+                                    if (ptr_count > 0) handled = 1;
                                 },
-                                c.AMOTION_EVENT_ACTION_UP, c.AMOTION_EVENT_ACTION_CANCEL => {
-                                    active_pointer_id = null;
-                                    arena.handlePointerUp();
-                                    handled = 1;
+                                c.AMOTION_EVENT_ACTION_UP => {
+                                    if (ptr_count > 0) {
+                                        const pid = c.AMotionEvent_getPointerId(ev, 0);
+                                        const px = c.AMotionEvent_getX(ev, 0) / scale_factor;
+                                        const py = c.AMotionEvent_getY(ev, 0) / scale_factor;
+                                        const is_touch = c.AMotionEvent_getToolType(ev, 0) != c.AMOTION_EVENT_TOOL_TYPE_MOUSE;
+                                        const btn = if (is_touch) events.PointerButton.primary else mouse_buttons.takeUp(pid);
+                                        router.dispatch(&arena, .{ .pointer_up = .{
+                                            .pointer_id = pid,
+                                            .x = px,
+                                            .y = py,
+                                            .button = btn,
+                                            .is_touch = is_touch,
+                                        } });
+                                        handled = 1;
+                                    }
                                 },
                                 c.AMOTION_EVENT_ACTION_POINTER_UP => {
                                     if (ptr_idx < ptr_count) {
-                                        const up_id = c.AMotionEvent_getPointerId(ev, ptr_idx);
-                                        if (active_pointer_id != null and active_pointer_id.? == up_id) {
-                                            active_pointer_id = null;
-                                            arena.handlePointerUp();
-                                            handled = 1;
-                                        }
+                                        const pid = c.AMotionEvent_getPointerId(ev, ptr_idx);
+                                        const px = c.AMotionEvent_getX(ev, ptr_idx) / scale_factor;
+                                        const py = c.AMotionEvent_getY(ev, ptr_idx) / scale_factor;
+                                        const is_touch = c.AMotionEvent_getToolType(ev, ptr_idx) != c.AMOTION_EVENT_TOOL_TYPE_MOUSE;
+                                        const btn = if (is_touch) events.PointerButton.primary else mouse_buttons.takeUp(pid);
+                                        router.dispatch(&arena, .{ .pointer_up = .{
+                                            .pointer_id = pid,
+                                            .x = px,
+                                            .y = py,
+                                            .button = btn,
+                                            .is_touch = is_touch,
+                                        } });
+                                        handled = 1;
+                                    }
+                                },
+                                c.AMOTION_EVENT_ACTION_CANCEL => {
+                                    var i: usize = 0;
+                                    while (i < ptr_count) : (i += 1) {
+                                        const pid = c.AMotionEvent_getPointerId(ev, i);
+                                        mouse_buttons.remove(pid);
+                                        router.dispatch(&arena, .{ .pointer_cancel = .{ .pointer_id = pid } });
+                                    }
+                                    if (ptr_count == 0) {
+                                        mouse_buttons.clear();
+                                        router.dispatch(&arena, .focus_lost);
+                                    }
+                                    handled = 1;
+                                },
+                                c.AMOTION_EVENT_ACTION_HOVER_MOVE => {
+                                    if (ptr_count > 0) {
+                                        const pid = c.AMotionEvent_getPointerId(ev, 0);
+                                        const px = c.AMotionEvent_getX(ev, 0) / scale_factor;
+                                        const py = c.AMotionEvent_getY(ev, 0) / scale_factor;
+                                        router.dispatch(&arena, .{ .pointer_move = .{
+                                            .pointer_id = pid,
+                                            .x = px,
+                                            .y = py,
+                                            .is_touch = false,
+                                        } });
+                                        handled = 1;
+                                    }
+                                },
+                                c.AMOTION_EVENT_ACTION_HOVER_EXIT => {
+                                    mouse_buttons.clear();
+                                    router.dispatch(&arena, .focus_lost);
+                                    handled = 1;
+                                },
+                                c.AMOTION_EVENT_ACTION_SCROLL => {
+                                    if (ptr_count > 0) {
+                                        const px = c.AMotionEvent_getX(ev, 0) / scale_factor;
+                                        const py = c.AMotionEvent_getY(ev, 0) / scale_factor;
+                                        const dx = c.AMotionEvent_getAxisValue(ev, c.AMOTION_EVENT_AXIS_HSCROLL, 0);
+                                        const dy = c.AMotionEvent_getAxisValue(ev, c.AMOTION_EVENT_AXIS_VSCROLL, 0);
+                                        router.dispatch(&arena, .{ .wheel = .{
+                                            .x = px,
+                                            .y = py,
+                                            .dx = dx,
+                                            .dy = dy,
+                                        } });
+                                        handled = 1;
                                     }
                                 },
                                 else => {},
@@ -575,10 +728,43 @@ fn workerMain(arg: ?*anyopaque) callconv(.c) ?*anyopaque {
             if (quit) break;
             drain_passes += 1;
             if (drain_passes >= 4) break;
-            ident = c.ALooper_pollOnce(0, null, &events, &out_data);
+            ident = c.ALooper_pollOnce(0, null, &looper_events, &out_data);
         }
 
         if (quit) break;
+
+        for (router.pollEvents()) |ui_ev| {
+            switch (ui_ev) {
+                .toggled => |t| {
+                    const ptr: [*]const u8 = if (t.test_id.len > 0) t.test_id.ptr else "";
+                    logInfo("UI toggled id=%.*s checked=%d", .{
+                        @as(c_int, @intCast(t.test_id.len)),
+                        ptr,
+                        @as(c_int, @intFromBool(t.checked)),
+                    });
+                },
+                .changed_f32 => |chg| {
+                    const same_slider = if (last_logged_slider_id) |lid|
+                        (lid.index == chg.id.index and lid.gen == chg.id.gen)
+                    else
+                        false;
+                    const delta = if (same_slider) @abs(chg.value - last_logged_slider_val) else 1.0;
+                    const at_edge = (chg.value <= 0.001 or chg.value >= 0.999) and (!same_slider or @abs(chg.value - last_logged_slider_val) > 0.001);
+                    if (delta >= 0.05 or at_edge or router.captured_node == null) {
+                        last_logged_slider_id = chg.id;
+                        last_logged_slider_val = chg.value;
+                        const ptr: [*]const u8 = if (chg.test_id.len > 0) chg.test_id.ptr else "";
+                        logInfo("UI changed_f32 id=%.*s value=%.3f", .{
+                            @as(c_int, @intCast(chg.test_id.len)),
+                            ptr,
+                            @as(f64, chg.value),
+                        });
+                    }
+                },
+                else => {},
+            }
+        }
+        router.clearEvents();
 
         if (window != null and egl.surface != c.EGL_NO_SURFACE and rend.initialized and arena.needsRedraw()) {
             var t0: c.struct_timespec = undefined;
