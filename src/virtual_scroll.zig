@@ -194,11 +194,11 @@ pub const SumTree = struct {
 pub const InertialScroller = struct {
     pub const RUBBER_BAND_FACTOR: f64 = 0.35;
     pub const MAX_VELOCITY: f64 = 6000.0;
-    pub const FRICTION_DECAY: f64 = 4.5;
+    pub const FRICTION_DECAY: f64 = 2.2;
     pub const SPRING_OMEGA: f64 = 14.0;
     pub const VELOCITY_SMOOTH_TAU: f64 = 0.02;
     pub const MIN_FLING_VELOCITY: f64 = 15.0;
-    pub const SETTLE_VELOCITY: f64 = 5.0;
+    pub const SETTLE_VELOCITY: f64 = 2.0;
     pub const SETTLE_EPSILON: f64 = 0.5;
     pub const MAX_STEP_DT: f64 = 0.05;
     pub const MAX_RESIZE_OVERSCROLL: f64 = 200.0;
@@ -339,8 +339,9 @@ pub const InertialScroller = struct {
             self.offset = target + new_x;
             self.velocity = new_v;
         } else {
-            self.offset += self.velocity * dt;
-            self.velocity *= @exp(-FRICTION_DECAY * dt);
+            const decay = @exp(-FRICTION_DECAY * dt);
+            self.offset += self.velocity * (1.0 - decay) / FRICTION_DECAY;
+            self.velocity *= decay;
         }
 
         const dist_out: f64 = if (self.offset < 0.0)
