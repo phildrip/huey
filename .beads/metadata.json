@@ -1,0 +1,7 @@
+{
+  "database": "dolt",
+  "backend": "dolt",
+  "dolt_mode": "embedded",
+  "dolt_database": "ziggui",
+  "project_id": "409a86c5-9a30-4816-a363-7dcef3fd5681"
+}
