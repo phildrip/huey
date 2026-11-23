@@ -3,6 +3,7 @@ const core = @import("core.zig");
 const events = @import("events.zig");
 const glyph_atlas = @import("glyph_atlas.zig");
 const renderer = @import("renderer.zig");
+const virtual_scroll = @import("virtual_scroll.zig");
 
 const c = @cImport({
     @cDefine("BIONIC_IOCTL_NO_SIGNEDNESS_OVERLOAD", "1");
@@ -340,6 +341,73 @@ const MouseButtonTracker = struct {
     }
 };
 
+const TouchScrollState = struct {
+    active_pointer: ?i32 = null,
+    down_y: f32 = 0.0,
+    down_t: f64 = 0.0,
+    scrolling: bool = false,
+    caught_fling: bool = false,
+
+    fn reset(self: *TouchScrollState) void {
+        self.active_pointer = null;
+        self.down_y = 0.0;
+        self.down_t = 0.0;
+        self.scrolling = false;
+        self.caught_fling = false;
+    }
+};
+
+fn monotonicSeconds() f64 {
+    var ts: c.struct_timespec = undefined;
+    if (c.clock_gettime(c.CLOCK_MONOTONIC, &ts) != 0) return 0.0;
+    return @as(f64, @floatFromInt(ts.tv_sec)) + @as(f64, @floatFromInt(ts.tv_nsec)) / 1_000_000_000.0;
+}
+
+fn motionEventSeconds(ev: *const c.AInputEvent) f64 {
+    const ns = c.AMotionEvent_getEventTime(ev);
+    if (ns <= 0) return monotonicSeconds();
+    return @as(f64, @floatFromInt(ns)) / 1_000_000_000.0;
+}
+
+fn applyScroll(
+    arena: *core.LayoutArena,
+    scroller: *const virtual_scroll.InertialScroller,
+    egl_w: c.EGLint,
+    egl_h: c.EGLint,
+    scale_factor: f32,
+) void {
+    if (arena.getRoot()) |root| {
+        arena.setScroll(root, 0.0, @floatCast(scroller.offset));
+    }
+    if (egl_w > 0 and egl_h > 0) {
+        const lw = @as(f32, @floatFromInt(egl_w)) / scale_factor;
+        const lh = @as(f32, @floatFromInt(egl_h)) / scale_factor;
+        arena.layout(lw, lh);
+    }
+}
+
+fn layoutAndSyncScroll(
+    arena: *core.LayoutArena,
+    scroller: *virtual_scroll.InertialScroller,
+    egl_w: c.EGLint,
+    egl_h: c.EGLint,
+    scale_factor: f32,
+) void {
+    if (egl_w <= 0 or egl_h <= 0) return;
+    const lw = @as(f32, @floatFromInt(egl_w)) / scale_factor;
+    const lh = @as(f32, @floatFromInt(egl_h)) / scale_factor;
+    arena.layout(lw, lh);
+    if (arena.getRoot()) |root| {
+        const ch = arena.contentHeight(root);
+        const max_s = @max(0.0, @as(f64, ch) - @as(f64, arena.viewport_h));
+        scroller.setMaxScroll(max_s);
+        arena.setScroll(root, 0.0, @floatCast(scroller.offset));
+        if (arena.layout_dirty) {
+            arena.layout(lw, lh);
+        }
+    }
+}
+
 fn workerMain(arg: ?*anyopaque) callconv(.c) ?*anyopaque {
     const state: *AppState = @ptrCast(@alignCast(arg.?));
 
@@ -409,6 +477,9 @@ fn workerMain(arg: ?*anyopaque) callconv(.c) ?*anyopaque {
     var input_queue: ?*c.AInputQueue = null;
     var router = events.EventRouter.init();
     var mouse_buttons: MouseButtonTracker = .{};
+    var scroller = virtual_scroll.InertialScroller.init(0.0);
+    var touch_scroll: TouchScrollState = .{};
+    var last_anim_time_s: ?f64 = null;
     var last_logged_slider_id: ?core.NodeId = null;
     var last_logged_slider_val: f32 = -1.0;
     var dumped_initial_tree = false;
@@ -423,7 +494,7 @@ fn workerMain(arg: ?*anyopaque) callconv(.c) ?*anyopaque {
     while (!quit) {
         const has_surface = (window != null and egl.surface != c.EGL_NO_SURFACE and rend.initialized);
         const has_pending_input = if (input_queue) |q| (c.AInputQueue_hasEvents(q) > 0) else false;
-        const timeout_ms: c_int = if ((has_surface and arena.needsRedraw()) or has_pending_input) 0 else -1;
+        const timeout_ms: c_int = if ((has_surface and (arena.needsRedraw() or scroller.isAnimating())) or has_pending_input) 0 else -1;
 
         var looper_events: c_int = 0;
         var out_data: ?*anyopaque = null;
@@ -471,9 +542,7 @@ fn workerMain(arg: ?*anyopaque) callconv(.c) ?*anyopaque {
                                         if (atlas_ptr) |a| {
                                             a.dirty = true;
                                         }
-                                        const lw = @as(f32, @floatFromInt(egl.width)) / scale_factor;
-                                        const lh = @as(f32, @floatFromInt(egl.height)) / scale_factor;
-                                        arena.layout(lw, lh);
+                                        layoutAndSyncScroll(&arena, &scroller, egl.width, egl.height, scale_factor);
                                         arena.requestRedraw();
                                     } else |_| {
                                         logErr("Renderer.init failed", .{});
@@ -486,6 +555,17 @@ fn workerMain(arg: ?*anyopaque) callconv(.c) ?*anyopaque {
                             rend.deinit();
                             egl.deinit();
                             mouse_buttons.clear();
+                            touch_scroll.reset();
+                            last_anim_time_s = null;
+                            if (scroller.dragging or scroller.animating) {
+                                scroller.dragging = false;
+                                scroller.animating = false;
+                                scroller.velocity = 0.0;
+                                scroller.offset = std.math.clamp(scroller.offset, 0.0, scroller.max_scroll);
+                                if (arena.getRoot()) |root| {
+                                    arena.setScroll(root, 0.0, @floatCast(scroller.offset));
+                                }
+                            }
                             router.dispatch(&arena, .focus_lost);
 
                             _ = c.pthread_mutex_lock(&state.mutex);
@@ -506,9 +586,7 @@ fn workerMain(arg: ?*anyopaque) callconv(.c) ?*anyopaque {
                                         egl.height = nh;
                                     }
                                     if (egl.width > 0 and egl.height > 0) {
-                                        const lw = @as(f32, @floatFromInt(egl.width)) / scale_factor;
-                                        const lh = @as(f32, @floatFromInt(egl.height)) / scale_factor;
-                                        arena.layout(lw, lh);
+                                        layoutAndSyncScroll(&arena, &scroller, egl.width, egl.height, scale_factor);
                                         arena.requestRedraw();
                                     }
                                 }
@@ -532,6 +610,13 @@ fn workerMain(arg: ?*anyopaque) callconv(.c) ?*anyopaque {
                                 c.AInputQueue_attachLooper(q, looper, LOOPER_ID_INPUT, null, null);
                             }
                             mouse_buttons.clear();
+                            const was_scrolling_ic = touch_scroll.scrolling;
+                            touch_scroll.reset();
+                            scroller.dragging = false;
+                            if (was_scrolling_ic or scroller.offset < 0.0 or scroller.offset > scroller.max_scroll) {
+                                scroller.endDrag();
+                                if (scroller.isAnimating()) arena.requestRedraw();
+                            }
                             router.dispatch(&arena, .focus_lost);
                             state.input_ack = true;
                             _ = c.pthread_cond_broadcast(&state.cond);
@@ -543,14 +628,19 @@ fn workerMain(arg: ?*anyopaque) callconv(.c) ?*anyopaque {
                                 a.setScaleFactor(scale_factor);
                             }
                             if (egl.width > 0 and egl.height > 0) {
-                                const lw = @as(f32, @floatFromInt(egl.width)) / scale_factor;
-                                const lh = @as(f32, @floatFromInt(egl.height)) / scale_factor;
-                                arena.layout(lw, lh);
+                                layoutAndSyncScroll(&arena, &scroller, egl.width, egl.height, scale_factor);
                                 arena.requestRedraw();
                             }
                         },
                         .cancel_pointer => {
                             mouse_buttons.clear();
+                            const was_scrolling_cp = touch_scroll.scrolling;
+                            touch_scroll.reset();
+                            scroller.dragging = false;
+                            if (was_scrolling_cp or scroller.offset < 0.0 or scroller.offset > scroller.max_scroll) {
+                                scroller.endDrag();
+                                if (scroller.isAnimating()) arena.requestRedraw();
+                            }
                             router.dispatch(&arena, .focus_lost);
                         },
                         .destroy => {
@@ -586,19 +676,46 @@ fn workerMain(arg: ?*anyopaque) callconv(.c) ?*anyopaque {
                             switch (action) {
                                 c.AMOTION_EVENT_ACTION_DOWN => {
                                     if (ptr_count > 0) {
+                                        if (arena.layout_dirty and egl.width > 0 and egl.height > 0) {
+                                            const lw = @as(f32, @floatFromInt(egl.width)) / scale_factor;
+                                            const lh = @as(f32, @floatFromInt(egl.height)) / scale_factor;
+                                            arena.layout(lw, lh);
+                                        }
                                         const pid = c.AMotionEvent_getPointerId(ev, 0);
                                         const px = c.AMotionEvent_getX(ev, 0) / scale_factor;
                                         const py = c.AMotionEvent_getY(ev, 0) / scale_factor;
                                         const is_touch = c.AMotionEvent_getToolType(ev, 0) != c.AMOTION_EVENT_TOOL_TYPE_MOUSE;
                                         const btn = MouseButtonTracker.buttonFromEvent(ev, is_touch);
                                         if (!is_touch) mouse_buttons.recordDown(pid, btn);
-                                        router.dispatch(&arena, .{ .pointer_down = .{
-                                            .pointer_id = pid,
-                                            .x = px,
-                                            .y = py,
-                                            .button = btn,
-                                            .is_touch = is_touch,
-                                        } });
+                                        if (is_touch) {
+                                            const was_animating = scroller.isAnimating();
+                                            scroller.animating = false;
+                                            scroller.dragging = false;
+                                            scroller.velocity = 0.0;
+                                            last_anim_time_s = null;
+                                            touch_scroll.active_pointer = pid;
+                                            touch_scroll.down_y = py;
+                                            touch_scroll.down_t = motionEventSeconds(ev);
+                                            touch_scroll.scrolling = false;
+                                            touch_scroll.caught_fling = was_animating;
+                                            if (!was_animating) {
+                                                router.dispatch(&arena, .{ .pointer_down = .{
+                                                    .pointer_id = pid,
+                                                    .x = px,
+                                                    .y = py,
+                                                    .button = btn,
+                                                    .is_touch = is_touch,
+                                                } });
+                                            }
+                                        } else {
+                                            router.dispatch(&arena, .{ .pointer_down = .{
+                                                .pointer_id = pid,
+                                                .x = px,
+                                                .y = py,
+                                                .button = btn,
+                                                .is_touch = is_touch,
+                                            } });
+                                        }
                                         handled = 1;
                                     }
                                 },
@@ -610,23 +727,52 @@ fn workerMain(arg: ?*anyopaque) callconv(.c) ?*anyopaque {
                                         const is_touch = c.AMotionEvent_getToolType(ev, ptr_idx) != c.AMOTION_EVENT_TOOL_TYPE_MOUSE;
                                         const btn = MouseButtonTracker.buttonFromEvent(ev, is_touch);
                                         if (!is_touch) mouse_buttons.recordDown(pid, btn);
-                                        router.dispatch(&arena, .{ .pointer_down = .{
-                                            .pointer_id = pid,
-                                            .x = px,
-                                            .y = py,
-                                            .button = btn,
-                                            .is_touch = is_touch,
-                                        } });
+                                        const allow_dispatch = if (is_touch) (touch_scroll.active_pointer == null and !touch_scroll.scrolling and !touch_scroll.caught_fling) else !touch_scroll.scrolling;
+                                        if (allow_dispatch) {
+                                            router.dispatch(&arena, .{ .pointer_down = .{
+                                                .pointer_id = pid,
+                                                .x = px,
+                                                .y = py,
+                                                .button = btn,
+                                                .is_touch = is_touch,
+                                            } });
+                                        }
                                         handled = 1;
                                     }
                                 },
                                 c.AMOTION_EVENT_ACTION_MOVE => {
+                                    const ev_t = motionEventSeconds(ev);
                                     var i: usize = 0;
                                     while (i < ptr_count) : (i += 1) {
                                         const pid = c.AMotionEvent_getPointerId(ev, i);
                                         const px = c.AMotionEvent_getX(ev, i) / scale_factor;
                                         const py = c.AMotionEvent_getY(ev, i) / scale_factor;
                                         const is_touch = c.AMotionEvent_getToolType(ev, i) != c.AMOTION_EVENT_TOOL_TYPE_MOUSE;
+                                        const is_active_scroll_ptr = is_touch and touch_scroll.active_pointer != null and touch_scroll.active_pointer.? == pid;
+                                        if (is_active_scroll_ptr) {
+                                            if (touch_scroll.scrolling) {
+                                                scroller.updateDrag(@as(f64, py), ev_t);
+                                                if (arena.getRoot()) |root| {
+                                                    arena.setScroll(root, 0.0, @floatCast(scroller.offset));
+                                                }
+                                                continue;
+                                            }
+                                            if (router.captured_node == null and @abs(py - touch_scroll.down_y) > 8.0) {
+                                                touch_scroll.scrolling = true;
+                                                if (!touch_scroll.caught_fling) {
+                                                    router.dispatch(&arena, .{ .pointer_cancel = .{ .pointer_id = pid } });
+                                                }
+                                                scroller.beginDrag(@as(f64, touch_scroll.down_y), touch_scroll.down_t);
+                                                scroller.updateDrag(@as(f64, py), ev_t);
+                                                if (arena.getRoot()) |root| {
+                                                    arena.setScroll(root, 0.0, @floatCast(scroller.offset));
+                                                }
+                                                continue;
+                                            }
+                                            if (touch_scroll.caught_fling) {
+                                                continue;
+                                            }
+                                        }
                                         router.dispatch(&arena, .{ .pointer_move = .{
                                             .pointer_id = pid,
                                             .x = px,
@@ -643,13 +789,37 @@ fn workerMain(arg: ?*anyopaque) callconv(.c) ?*anyopaque {
                                         const py = c.AMotionEvent_getY(ev, 0) / scale_factor;
                                         const is_touch = c.AMotionEvent_getToolType(ev, 0) != c.AMOTION_EVENT_TOOL_TYPE_MOUSE;
                                         const btn = if (is_touch) events.PointerButton.primary else mouse_buttons.takeUp(pid);
-                                        router.dispatch(&arena, .{ .pointer_up = .{
-                                            .pointer_id = pid,
-                                            .x = px,
-                                            .y = py,
-                                            .button = btn,
-                                            .is_touch = is_touch,
-                                        } });
+                                        if (is_touch and touch_scroll.active_pointer != null and touch_scroll.active_pointer.? == pid) {
+                                            const was_scrolling = touch_scroll.scrolling;
+                                            const was_caught = touch_scroll.caught_fling;
+                                            touch_scroll.reset();
+                                            if (was_scrolling) {
+                                                scroller.endDrag();
+                                                if (scroller.isAnimating()) arena.requestRedraw();
+                                            } else {
+                                                if (!was_caught) {
+                                                    router.dispatch(&arena, .{ .pointer_up = .{
+                                                        .pointer_id = pid,
+                                                        .x = px,
+                                                        .y = py,
+                                                        .button = btn,
+                                                        .is_touch = is_touch,
+                                                    } });
+                                                }
+                                                if (scroller.offset < 0.0 or scroller.offset > scroller.max_scroll) {
+                                                    scroller.endDrag();
+                                                    arena.requestRedraw();
+                                                }
+                                            }
+                                        } else {
+                                            router.dispatch(&arena, .{ .pointer_up = .{
+                                                .pointer_id = pid,
+                                                .x = px,
+                                                .y = py,
+                                                .button = btn,
+                                                .is_touch = is_touch,
+                                            } });
+                                        }
                                         handled = 1;
                                     }
                                 },
@@ -660,13 +830,60 @@ fn workerMain(arg: ?*anyopaque) callconv(.c) ?*anyopaque {
                                         const py = c.AMotionEvent_getY(ev, ptr_idx) / scale_factor;
                                         const is_touch = c.AMotionEvent_getToolType(ev, ptr_idx) != c.AMOTION_EVENT_TOOL_TYPE_MOUSE;
                                         const btn = if (is_touch) events.PointerButton.primary else mouse_buttons.takeUp(pid);
-                                        router.dispatch(&arena, .{ .pointer_up = .{
-                                            .pointer_id = pid,
-                                            .x = px,
-                                            .y = py,
-                                            .button = btn,
-                                            .is_touch = is_touch,
-                                        } });
+                                        if (is_touch and touch_scroll.active_pointer != null and touch_scroll.active_pointer.? == pid) {
+                                            var next_idx: ?usize = null;
+                                            if (ptr_count > 1) {
+                                                var k: usize = 0;
+                                                while (k < ptr_count) : (k += 1) {
+                                                    if (k == ptr_idx) continue;
+                                                    if (c.AMotionEvent_getToolType(ev, k) != c.AMOTION_EVENT_TOOL_TYPE_MOUSE) {
+                                                        next_idx = k;
+                                                        break;
+                                                    }
+                                                }
+                                            }
+                                            if (next_idx) |nk| {
+                                                const new_pid = c.AMotionEvent_getPointerId(ev, nk);
+                                                const new_py = c.AMotionEvent_getY(ev, nk) / scale_factor;
+                                                const ev_t = motionEventSeconds(ev);
+                                                touch_scroll.active_pointer = new_pid;
+                                                touch_scroll.down_y = new_py;
+                                                touch_scroll.down_t = ev_t;
+                                                if (touch_scroll.scrolling) {
+                                                    scroller.beginDrag(@as(f64, new_py), ev_t);
+                                                }
+                                            } else {
+                                                const was_scrolling = touch_scroll.scrolling;
+                                                const was_caught = touch_scroll.caught_fling;
+                                                touch_scroll.reset();
+                                                if (was_scrolling) {
+                                                    scroller.endDrag();
+                                                    if (scroller.isAnimating()) arena.requestRedraw();
+                                                } else {
+                                                    if (!was_caught) {
+                                                        router.dispatch(&arena, .{ .pointer_up = .{
+                                                            .pointer_id = pid,
+                                                            .x = px,
+                                                            .y = py,
+                                                            .button = btn,
+                                                            .is_touch = is_touch,
+                                                        } });
+                                                    }
+                                                    if (scroller.offset < 0.0 or scroller.offset > scroller.max_scroll) {
+                                                        scroller.endDrag();
+                                                        arena.requestRedraw();
+                                                    }
+                                                }
+                                            }
+                                        } else {
+                                            router.dispatch(&arena, .{ .pointer_up = .{
+                                                .pointer_id = pid,
+                                                .x = px,
+                                                .y = py,
+                                                .button = btn,
+                                                .is_touch = is_touch,
+                                            } });
+                                        }
                                         handled = 1;
                                     }
                                 },
@@ -680,6 +897,14 @@ fn workerMain(arg: ?*anyopaque) callconv(.c) ?*anyopaque {
                                     if (ptr_count == 0) {
                                         mouse_buttons.clear();
                                         router.dispatch(&arena, .focus_lost);
+                                    }
+                                    if (touch_scroll.active_pointer != null) {
+                                        const was_scrolling = touch_scroll.scrolling;
+                                        touch_scroll.reset();
+                                        if (was_scrolling or scroller.offset < 0.0 or scroller.offset > scroller.max_scroll) {
+                                            scroller.endDrag();
+                                            if (scroller.isAnimating()) arena.requestRedraw();
+                                        }
                                     }
                                     handled = 1;
                                 },
@@ -714,6 +939,10 @@ fn workerMain(arg: ?*anyopaque) callconv(.c) ?*anyopaque {
                                             .dx = dx,
                                             .dy = dy,
                                         } });
+                                        touch_scroll.reset();
+                                        last_anim_time_s = null;
+                                        scroller.onWheel(-@as(f64, dy) * 48.0);
+                                        applyScroll(&arena, &scroller, egl.width, egl.height, scale_factor);
                                         handled = 1;
                                     }
                                 },
@@ -766,10 +995,28 @@ fn workerMain(arg: ?*anyopaque) callconv(.c) ?*anyopaque {
         }
         router.clearEvents();
 
-        if (window != null and egl.surface != c.EGL_NO_SURFACE and rend.initialized and arena.needsRedraw()) {
+        const has_surface_now = (window != null and egl.surface != c.EGL_NO_SURFACE and rend.initialized);
+        if (has_surface_now and scroller.isAnimating()) {
+            const now_s = monotonicSeconds();
+            const dt_s = if (last_anim_time_s) |prev_t| (now_s - prev_t) else (1.0 / 60.0);
+            last_anim_time_s = now_s;
+            _ = scroller.step(dt_s);
+            applyScroll(&arena, &scroller, egl.width, egl.height, scale_factor);
+            arena.requestRedraw();
+        } else {
+            last_anim_time_s = null;
+        }
+
+        if (has_surface_now and arena.needsRedraw()) {
             var t0: c.struct_timespec = undefined;
             var t1: c.struct_timespec = undefined;
             _ = c.clock_gettime(c.CLOCK_MONOTONIC, &t0);
+
+            if (arena.layout_dirty and egl.width > 0 and egl.height > 0) {
+                const lw = @as(f32, @floatFromInt(egl.width)) / scale_factor;
+                const lh = @as(f32, @floatFromInt(egl.height)) / scale_factor;
+                arena.layout(lw, lh);
+            }
 
             frame_idx +%= 1;
             const quad_count = arena.emitQuadsWithAtlas(quad_buf, scale_factor, atlas_ptr, frame_idx);
@@ -795,9 +1042,7 @@ fn workerMain(arg: ?*anyopaque) callconv(.c) ?*anyopaque {
                             if (atlas_ptr) |a| {
                                 a.dirty = true;
                             }
-                            const lw = @as(f32, @floatFromInt(egl.width)) / scale_factor;
-                            const lh = @as(f32, @floatFromInt(egl.height)) / scale_factor;
-                            arena.layout(lw, lh);
+                            layoutAndSyncScroll(&arena, &scroller, egl.width, egl.height, scale_factor);
                         } else |_| {
                             egl.deinit();
                         }
@@ -810,9 +1055,7 @@ fn workerMain(arg: ?*anyopaque) callconv(.c) ?*anyopaque {
                 const prev_h = egl.height;
                 egl.querySize();
                 if ((egl.width != prev_w or egl.height != prev_h) and egl.width > 0 and egl.height > 0) {
-                    const lw = @as(f32, @floatFromInt(egl.width)) / scale_factor;
-                    const lh = @as(f32, @floatFromInt(egl.height)) / scale_factor;
-                    arena.layout(lw, lh);
+                    layoutAndSyncScroll(&arena, &scroller, egl.width, egl.height, scale_factor);
                     arena.requestRedraw();
                 } else {
                     arena.consumeRedraw();

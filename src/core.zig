@@ -1464,6 +1464,28 @@ pub const LayoutArena = struct {
         return .{ sp.scroll_x, sp.scroll_y };
     }
 
+    pub fn contentHeight(self: *const LayoutArena, container_id: NodeId) f32 {
+        const idx = self.resolveIndex(container_id) orelse return 0.0;
+        const slice = self.nodes.slice();
+        const first_child = slice.items(.first_child)[idx] orelse return 0.0;
+        const next_siblings = slice.items(.next_sibling);
+        const rects = slice.items(.rect);
+        const parent_y: f64 = @as(f64, sanitizeFinite(rects[idx].y));
+        const sy: f64 = @as(f64, sanitizeFinite(slice.items(.scroll_props)[idx].scroll_y));
+        const pad_y = @min(sanitizeNonNeg(slice.items(.padding)[idx]), sanitizeNonNeg(rects[idx].h) * 0.5);
+
+        var max_bottom: f64 = 0.0;
+        var cur: ?u16 = first_child;
+        while (cur) |c| : (cur = next_siblings[c]) {
+            const cr = rects[c];
+            const bottom: f64 = (@as(f64, sanitizeFinite(cr.y)) + @as(f64, sanitizeNonNeg(cr.h)) + sy) - parent_y;
+            if (bottom > max_bottom) {
+                max_bottom = bottom;
+            }
+        }
+        return clampF32(@max(0.0, max_bottom + @as(f64, pad_y)));
+    }
+
     pub fn needsRedraw(self: *const LayoutArena) bool {
         return self.redraw_needed;
     }
@@ -2059,6 +2081,7 @@ pub fn buildDemoScene(arena: *LayoutArena) !void {
         .padding = 24.0,
         .gap = 14.0,
         .fill = Nord.polar_night_0,
+        .clip_children = true,
     });
 
     // Header card
@@ -2296,6 +2319,7 @@ pub fn buildDemoScene(arena: *LayoutArena) !void {
         .kind = .card,
         .role = .panel,
         .test_id = "dashboard.swatch_grid",
+        .height = 362.0,
         .padding = 14.0,
         .gap = 10.0,
         .corner_radius = 16.0,
@@ -2372,6 +2396,102 @@ pub fn buildDemoScene(arena: *LayoutArena) !void {
                 .fill = palette[row_i][col_i],
                 .border = Nord.polar_night_3,
                 .checked = (row_i == 1 and col_i == 1),
+            });
+        }
+    }
+
+    // Labeled section of 16 scrollable Nord cards (~2,250 dp total content height)
+    _ = try arena.addChild(root, .{
+        .kind = .card,
+        .role = .panel,
+        .test_id = "scroll.section_header",
+        .label = "VIRTUALIZED FEED // 16 NORD CARDS",
+        .font_size = 13.0,
+        .text_color = Nord.frost_1,
+        .height = 24.0,
+        .fill = Nord.transparent,
+    });
+
+    const scroll_rows = [_]struct {
+        test_id: []const u8,
+        label_id: []const u8,
+        bar_id: []const u8,
+        label: []const u8,
+        accent: Color,
+        val: f32,
+        is_toggle: bool,
+        checked: bool,
+    }{
+        .{ .test_id = "scroll.row_00", .label_id = "scroll.row_00.label", .bar_id = "scroll.row_00.bar", .label = "Scroll Row 01 // 60Hz Inertial", .accent = Nord.frost_1, .val = 0.94, .is_toggle = false, .checked = false },
+        .{ .test_id = "scroll.row_01", .label_id = "scroll.row_01.label", .bar_id = "scroll.row_01.bar", .label = "Scroll Row 02 // SumTree O(log N)", .accent = Nord.aurora_green, .val = 0.88, .is_toggle = true, .checked = true },
+        .{ .test_id = "scroll.row_02", .label_id = "scroll.row_02.label", .bar_id = "scroll.row_02.bar", .label = "Scroll Row 03 // Fenwick Lifting", .accent = Nord.frost_2, .val = 0.82, .is_toggle = false, .checked = false },
+        .{ .test_id = "scroll.row_03", .label_id = "scroll.row_03.label", .bar_id = "scroll.row_03.bar", .label = "Scroll Row 04 // Rubber Overscroll", .accent = Nord.aurora_purple, .val = 0.76, .is_toggle = true, .checked = false },
+        .{ .test_id = "scroll.row_04", .label_id = "scroll.row_04.label", .bar_id = "scroll.row_04.bar", .label = "Scroll Row 05 // VSync Paced", .accent = Nord.aurora_green, .val = 0.91, .is_toggle = false, .checked = false },
+        .{ .test_id = "scroll.row_05", .label_id = "scroll.row_05.label", .bar_id = "scroll.row_05.bar", .label = "Scroll Row 06 // Clip Scissor", .accent = Nord.frost_1, .val = 0.85, .is_toggle = true, .checked = true },
+        .{ .test_id = "scroll.row_06", .label_id = "scroll.row_06.label", .bar_id = "scroll.row_06.bar", .label = "Scroll Row 07 // Pointer Cancel", .accent = Nord.aurora_yellow, .val = 0.78, .is_toggle = false, .checked = false },
+        .{ .test_id = "scroll.row_07", .label_id = "scroll.row_07.label", .bar_id = "scroll.row_07.bar", .label = "Scroll Row 08 // Oklab Blending", .accent = Nord.aurora_orange, .val = 0.84, .is_toggle = true, .checked = true },
+        .{ .test_id = "scroll.row_08", .label_id = "scroll.row_08.label", .bar_id = "scroll.row_08.bar", .label = "Scroll Row 09 // UberQuad SDF", .accent = Nord.frost_3, .val = 0.89, .is_toggle = false, .checked = false },
+        .{ .test_id = "scroll.row_09", .label_id = "scroll.row_09.label", .bar_id = "scroll.row_09.bar", .label = "Scroll Row 10 // Glyph Atlas", .accent = Nord.aurora_green, .val = 0.92, .is_toggle = true, .checked = true },
+        .{ .test_id = "scroll.row_10", .label_id = "scroll.row_10.label", .bar_id = "scroll.row_10.bar", .label = "Scroll Row 11 // SoA LayoutArena", .accent = Nord.frost_0, .val = 0.74, .is_toggle = false, .checked = false },
+        .{ .test_id = "scroll.row_11", .label_id = "scroll.row_11.label", .bar_id = "scroll.row_11.bar", .label = "Scroll Row 12 // Touch Slop 8dp", .accent = Nord.frost_2, .val = 0.69, .is_toggle = true, .checked = false },
+        .{ .test_id = "scroll.row_12", .label_id = "scroll.row_12.label", .bar_id = "scroll.row_12.bar", .label = "Scroll Row 13 // Spring Damping", .accent = Nord.aurora_purple, .val = 0.81, .is_toggle = false, .checked = false },
+        .{ .test_id = "scroll.row_13", .label_id = "scroll.row_13.label", .bar_id = "scroll.row_13.bar", .label = "Scroll Row 14 // 1M Row Ready", .accent = Nord.aurora_yellow, .val = 0.95, .is_toggle = true, .checked = true },
+        .{ .test_id = "scroll.row_14", .label_id = "scroll.row_14.label", .bar_id = "scroll.row_14.bar", .label = "Scroll Row 15 // Zero Heap Frame", .accent = Nord.aurora_red, .val = 0.66, .is_toggle = false, .checked = false },
+        .{ .test_id = "scroll.row_15", .label_id = "scroll.row_15.label", .bar_id = "scroll.row_15.bar", .label = "Scroll Row 16 // Zero-Tick Sleep", .accent = Nord.aurora_green, .val = 0.97, .is_toggle = true, .checked = true },
+    };
+
+    for (scroll_rows) |row_spec| {
+        if (row_spec.is_toggle) {
+            _ = try arena.addChild(root, .{
+                .kind = .toggle,
+                .role = .switch_control,
+                .test_id = row_spec.test_id,
+                .label = row_spec.label,
+                .font_size = 15.0,
+                .text_color = Nord.snow_storm_2,
+                .height = 64.0,
+                .corner_radius = 14.0,
+                .border_width = 1.5,
+                .shadow_blur = 6.0,
+                .fill = Nord.polar_night_1,
+                .border = Nord.polar_night_3,
+                .accent = row_spec.accent,
+                .checked = row_spec.checked,
+            });
+        } else {
+            const card = try arena.addChild(root, .{
+                .kind = .card,
+                .role = .panel,
+                .test_id = row_spec.test_id,
+                .height = 64.0,
+                .padding = 12.0,
+                .gap = 6.0,
+                .corner_radius = 14.0,
+                .border_width = 1.5,
+                .shadow_blur = 6.0,
+                .fill = Nord.polar_night_1,
+                .border = Nord.polar_night_3,
+            });
+            _ = try arena.addChild(card, .{
+                .kind = .card,
+                .role = .panel,
+                .test_id = row_spec.label_id,
+                .label = row_spec.label,
+                .font_size = 14.0,
+                .text_color = Nord.snow_storm_2,
+                .height = 20.0,
+                .fill = Nord.transparent,
+            });
+            _ = try arena.addChild(card, .{
+                .kind = .bar,
+                .role = .progress_bar,
+                .test_id = row_spec.bar_id,
+                .corner_radius = 6.0,
+                .border_width = 1.0,
+                .fill = Nord.polar_night_0,
+                .border = Nord.polar_night_2,
+                .accent = row_spec.accent,
+                .slider_val = row_spec.val,
             });
         }
     }
