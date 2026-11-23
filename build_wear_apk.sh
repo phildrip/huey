@@ -15,6 +15,7 @@ echo "[0/5] Running Wear OS showcase, theme & animation unit tests..."
 "$ZIG" test "$ROOT_DIR/src/animation_test.zig"
 "$ZIG" test "$ROOT_DIR/src/wearos_test.zig"
 "$ZIG" test "$ROOT_DIR/src/wear_circular_test.zig"
+"$ZIG" test "$ROOT_DIR/src/hold_confirm_test.zig"
 "$ZIG" test "$ROOT_DIR/src/wear_showcase_scene_test.zig" -I"$ROOT_DIR/vendor" "$ROOT_DIR/src/stb_truetype_impl.c" -lc -lm
 
 SYSROOT_INC="$NDK/toolchains/llvm/prebuilt/linux-x86_64/sysroot/usr/include"

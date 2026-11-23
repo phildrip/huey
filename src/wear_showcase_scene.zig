@@ -3,6 +3,7 @@ const core = @import("core.zig");
 const events = @import("events.zig");
 const overlay = @import("overlay.zig");
 const wearos = @import("wearos.zig");
+const hold_confirm = @import("hold_confirm.zig");
 const glyph_atlas = @import("glyph_atlas.zig");
 const animation = @import("animation.zig");
 
@@ -50,7 +51,8 @@ fn parseIndexSuffix(test_id: []const u8, prefix: []const u8, max_count: usize) ?
 pub const WearShowcaseApp = struct {
     locked: bool = true,
     trunk_open: bool = false,
-    flash_count: u32 = 0,
+    frunk_hold: hold_confirm.HoldToConfirm = hold_confirm.HoldToConfirm.init(1.5),
+    frunk_open: bool = false,
     accent_idx: u8 = 0,
     wear_ambient: bool = false,
     counter: i32 = 42,
@@ -63,7 +65,6 @@ pub const WearShowcaseApp = struct {
     last_frame_ms: f32 = 1.8,
     last_quad_count: usize = 0,
 
-    flash_buf: [32]u8 = undefined,
     stats_buf: [64]u8 = undefined,
     counter_buf: [32]u8 = undefined,
     slider_buf: [32]u8 = undefined,
@@ -73,11 +74,20 @@ pub const WearShowcaseApp = struct {
     }
 
     pub fn isAnimating(self: *const WearShowcaseApp) bool {
-        return self.anims.isAnimating();
+        return self.anims.isAnimating() or (!self.wear_ambient and self.frunk_hold.isAnimating());
     }
 
     pub fn stepAnimations(self: *WearShowcaseApp, dt_s: f32) bool {
-        return self.anims.step(dt_s);
+        const anim_active = self.anims.step(dt_s);
+        if (self.wear_ambient) {
+            self.frunk_hold.reset();
+            return anim_active;
+        }
+        if (self.frunk_hold.step(dt_s)) {
+            self.frunk_open = !self.frunk_open;
+            self.triggerBezelPulse();
+        }
+        return anim_active or self.frunk_hold.isAnimating();
     }
 
     pub fn accent(self: *const WearShowcaseApp) core.Color {
@@ -196,22 +206,40 @@ pub const WearShowcaseApp = struct {
             .border = if (self.trunk_open) core.Nord.aurora_orange else cur_accent,
             .focusable = true,
         });
-        const flash_label = if (self.flash_count == 0)
-            "FLASH"
+        const frunk_label = if (self.frunk_hold.holding)
+            "HOLD..."
+        else if (self.frunk_open)
+            "OPEN!"
         else
-            (std.fmt.bufPrint(&self.flash_buf, "FLASH {d}", .{self.flash_count}) catch "FLASH");
+            "FRUNK";
+        const frunk_fill = if (self.frunk_hold.holding)
+            core.Nord.aurora_orange
+        else if (self.frunk_open)
+            core.Nord.aurora_green
+        else
+            core.Nord.polar_night_2;
+        const frunk_border = if (self.frunk_hold.holding)
+            core.Nord.aurora_orange
+        else if (self.frunk_open)
+            core.Nord.aurora_green
+        else
+            cur_accent;
+        const frunk_text_color = if (self.frunk_hold.holding or self.frunk_open)
+            core.Nord.polar_night_0
+        else
+            core.Nord.snow_storm_2;
         _ = try arena.addChild(action_row, .{
             .kind = .card,
             .role = .panel,
-            .test_id = "wear_flash",
-            .label = flash_label,
+            .test_id = "wear_frunk",
+            .label = frunk_label,
             .font_size = 12.5,
-            .text_color = core.Nord.snow_storm_2,
+            .text_color = frunk_text_color,
             .height = 44.0,
             .corner_radius = 22.0,
             .border_width = 1.5,
-            .fill = core.Nord.polar_night_2,
-            .border = if (self.flash_count > 0) core.Nord.aurora_yellow else cur_accent,
+            .fill = frunk_fill,
+            .border = frunk_border,
             .focusable = true,
         });
 
@@ -371,6 +399,38 @@ pub const WearShowcaseApp = struct {
         });
     }
 
+    pub fn onWearPointerDown(self: *WearShowcaseApp, arena: *const core.LayoutArena, pointer_id: i32, x: f32, y: f32) bool {
+        if (self.wear_ambient) return false;
+        if (!std.math.isFinite(x) or !std.math.isFinite(y)) return false;
+        if (self.overlays.activeCount() > 0) return false;
+        const frunk_id = arena.findByTestId("wear_frunk") orelse return false;
+        const hit_id = arena.hitTest(x, y) orelse return false;
+        if (hit_id.index == frunk_id.index and hit_id.gen == frunk_id.gen) {
+            if (!self.frunk_hold.holding) {
+                self.frunk_hold.beginHold(pointer_id);
+            }
+            return true;
+        }
+        return false;
+    }
+
+    pub fn onWearPointerMove(self: *WearShowcaseApp, arena: *const core.LayoutArena, pointer_id: i32, x: f32, y: f32) void {
+        if (!self.frunk_hold.holding) return;
+        const bounds = if (arena.findByTestId("wear_frunk")) |nid|
+            (arena.getRect(nid) orelse core.Rect{})
+        else
+            core.Rect{};
+        self.frunk_hold.updatePointerMove(pointer_id, x, y, bounds);
+    }
+
+    pub fn onWearPointerUp(self: *WearShowcaseApp, pointer_id: i32) void {
+        self.frunk_hold.endHold(pointer_id);
+    }
+
+    pub fn onWearPointerCancel(self: *WearShowcaseApp) void {
+        self.frunk_hold.cancel();
+    }
+
     pub fn handlePointerDown(self: *WearShowcaseApp, x: f32, y: f32) bool {
         if (self.overlays.activeCount() == 0) return false;
         if (!std.math.isFinite(x) or !std.math.isFinite(y)) return false;
@@ -397,11 +457,6 @@ pub const WearShowcaseApp = struct {
             self.triggerBezelPulse();
             return true;
         }
-        if (std.mem.eql(u8, test_id, "wear_flash")) {
-            self.flash_count +|= 1;
-            self.triggerBezelPulse();
-            return true;
-        }
         if (parseIndexSuffix(test_id, "wear_accent_", ACCENTS.len)) |idx| {
             self.accent_idx = @intCast(idx);
             return true;
@@ -409,6 +464,9 @@ pub const WearShowcaseApp = struct {
         if (std.mem.eql(u8, test_id, "wear_ambient")) {
             self.wear_ambient = toggled_val orelse !self.wear_ambient;
             self.anims.setReducedMotion(self.wear_ambient);
+            if (self.wear_ambient) {
+                self.frunk_hold.reset();
+            }
             return true;
         }
         if (std.mem.eql(u8, test_id, "wear_dec")) {
@@ -585,6 +643,16 @@ pub const WearShowcaseApp = struct {
                     .clip_rect = .{ 0.0, 0.0, vw_px, vh_px },
                 };
                 count += 1;
+            }
+            if (count < out_quads.len and ring_dim > 10.0) {
+                count += self.frunk_hold.emitPerimeterFireworkQuads(
+                    out_quads[count..],
+                    vw * 0.5 * s,
+                    vh * 0.5 * s,
+                    ring_dim * 0.5 * s - 4.0 * s,
+                    4.5 * s,
+                    .{ 0.0, 0.0, vw_px, vh_px },
+                );
             }
         }
 

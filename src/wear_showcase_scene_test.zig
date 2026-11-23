@@ -95,9 +95,9 @@ test "WearShowcaseApp 233x233 round OLED layout fits inscribed safe square and s
     const trunk_r = arena.getRect(arena.findByTestId("wear_trunk").?).?;
     try std.testing.expect(trunk_r.h >= 44.0);
     try std.testing.expect(trunk_r.w >= 44.0);
-    const flash_r = arena.getRect(arena.findByTestId("wear_flash").?).?;
-    try std.testing.expect(flash_r.h >= 44.0);
-    try std.testing.expect(flash_r.w >= 44.0);
+    const frunk_r = arena.getRect(arena.findByTestId("wear_frunk").?).?;
+    try std.testing.expect(frunk_r.h >= 44.0);
+    try std.testing.expect(frunk_r.w >= 44.0);
     const ambient_r = arena.getRect(arena.findByTestId("wear_ambient").?).?;
     try std.testing.expect(ambient_r.h >= 46.0);
     try std.testing.expect(ambient_r.w >= 120.0);
@@ -110,7 +110,7 @@ test "WearShowcaseApp 233x233 round OLED layout fits inscribed safe square and s
     try std.testing.expectApproxEqAbs(card3_before.y - 140.0, card3_after.y, 0.01);
 }
 
-test "WearShowcaseApp Tesla Key interactions: lock, trunk, flash" {
+test "WearShowcaseApp Tesla Key interactions: lock, trunk, frunk" {
     var app = wear_showcase.WearShowcaseApp.init();
     var arena = core.LayoutArena.init(std.testing.allocator);
     defer arena.deinit();
@@ -185,17 +185,58 @@ test "WearShowcaseApp Tesla Key interactions: lock, trunk, flash" {
     try std.testing.expectEqualStrings("TRUNK", arena.nodes.items(.label)[arena.findByTestId("wear_trunk").?.index]);
     while (app.isAnimating()) _ = app.stepAnimations(1.0 / 60.0);
 
-    // Tap wear_flash -> FLASH 1 -> FLASH 2 (triggers bezel pulse)
-    const flash_0 = arena.findByTestId("wear_flash").?;
-    try std.testing.expectEqualStrings("FLASH", arena.nodes.items(.label)[flash_0.index]);
-    try std.testing.expect(try tapNode(&app, &arena, &router, "wear_flash", w, h));
-    try std.testing.expectEqual(@as(u32, 1), app.flash_count);
+    // Hold-to-confirm wear_frunk -> FRUNK -> HOLD... (orange) -> OPEN! (green) + perimeter fireworks + bezel pulse
+    const frunk_0 = arena.findByTestId("wear_frunk").?;
+    try std.testing.expectEqualStrings("FRUNK", arena.nodes.items(.label)[frunk_0.index]);
+    const frunk_rect = arena.getRect(frunk_0).?;
+    const fx = frunk_rect.x + frunk_rect.w * 0.5;
+    const fy = frunk_rect.y + frunk_rect.h * 0.5;
+
+    // Early release cancels without opening frunk
+    try std.testing.expect(app.onWearPointerDown(&arena, 10, fx, fy));
     try std.testing.expect(app.isAnimating());
-    try std.testing.expectEqualStrings("FLASH 1", arena.nodes.items(.label)[arena.findByTestId("wear_flash").?.index]);
+    try app.buildScene(&arena, w, h);
+    arena.layout(w, h);
+    const frunk_hold_node = arena.findByTestId("wear_frunk").?;
+    try std.testing.expectEqualStrings("HOLD...", arena.nodes.items(.label)[frunk_hold_node.index]);
+    try std.testing.expectApproxEqAbs(core.Nord.aurora_orange[0], arena.nodes.items(.fill)[frunk_hold_node.index][0], 1e-5);
+    _ = app.stepAnimations(0.5);
+    app.onWearPointerUp(10);
     while (app.isAnimating()) _ = app.stepAnimations(1.0 / 60.0);
-    try std.testing.expect(try tapNode(&app, &arena, &router, "wear_flash", w, h));
-    try std.testing.expectEqual(@as(u32, 2), app.flash_count);
-    try std.testing.expectEqualStrings("FLASH 2", arena.nodes.items(.label)[arena.findByTestId("wear_flash").?.index]);
+    try std.testing.expect(!app.frunk_open);
+
+    // Full 1.5s hold triggers frunk_open and emits perimeter firework quads
+    try std.testing.expect(app.onWearPointerDown(&arena, 11, fx, fy));
+    app.onWearPointerMove(&arena, 11, fx + 4.0, fy);
+    try std.testing.expect(app.frunk_hold.holding);
+    var hold_steps: usize = 0;
+    while (hold_steps < 95 and !app.frunk_open) : (hold_steps += 1) {
+        _ = app.stepAnimations(1.0 / 60.0);
+    }
+    try std.testing.expect(app.frunk_open);
+    try app.buildScene(&arena, w, h);
+    arena.layout(w, h);
+    const frunk_open_node = arena.findByTestId("wear_frunk").?;
+    try std.testing.expectEqualStrings("OPEN!", arena.nodes.items(.label)[frunk_open_node.index]);
+    try std.testing.expectApproxEqAbs(core.Nord.aurora_green[0], arena.nodes.items(.fill)[frunk_open_node.index][0], 1e-5);
+
+    var fw_quads: [2048]core.QuadInstance = undefined;
+    const base_fw = arena.emitQuads(&fw_quads, 1.0);
+    const total_fw = app.emitPostQuads(&arena, &fw_quads, base_fw, w, h, 1.0, null, 3);
+    try std.testing.expect(total_fw > base_fw + 10);
+
+    app.onWearPointerUp(11);
+    var settle_steps: usize = 0;
+    while (app.isAnimating() and settle_steps < 240) : (settle_steps += 1) {
+        _ = app.stepAnimations(1.0 / 60.0);
+    }
+    try std.testing.expect(!app.isAnimating());
+
+    // Slipping outside button bounds cancels hold cleanly
+    try std.testing.expect(app.onWearPointerDown(&arena, 12, fx, fy));
+    app.onWearPointerMove(&arena, 12, fx + 200.0, fy + 200.0);
+    try std.testing.expect(!app.frunk_hold.holding);
+    app.onWearPointerCancel();
     while (app.isAnimating()) _ = app.stepAnimations(1.0 / 60.0);
 }
 
@@ -280,6 +321,17 @@ test "WearShowcaseApp Nord accent swatches, bezel ring, and OLED ambient transfo
     try app.buildScene(&arena, w, h);
     arena.layout(w, h);
     try std.testing.expect(!app.isAnimating());
+
+    // Pressing wear_frunk while in OLED ambient mode must not start 60Hz animations
+    try app.buildScene(&arena, w, h);
+    arena.layout(w, h);
+    arena.setScroll(app.scroll_container.?, 0.0, 0.0);
+    arena.layout(w, h);
+    const amb_frunk_r = arena.getRect(arena.findByTestId("wear_frunk").?).?;
+    try std.testing.expect(!app.onWearPointerDown(&arena, 20, amb_frunk_r.x + amb_frunk_r.w * 0.5, amb_frunk_r.y + amb_frunk_r.h * 0.5));
+    try std.testing.expect(!app.isAnimating());
+    arena.setScroll(app.scroll_container.?, 0.0, 140.0);
+    arena.layout(w, h);
 
     var quads: [2048]core.QuadInstance = undefined;
     const base_count = arena.emitQuadsWithAtlas(&quads, scale, &atlas, 10);

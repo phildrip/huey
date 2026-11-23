@@ -642,9 +642,13 @@ fn workerMain(arg: ?*anyopaque) callconv(.c) ?*anyopaque {
                             egl.deinit();
                             mouse_buttons.clear();
                             touch_scroll.reset();
+                            if (@hasDecl(ActiveShowcase, "onWearPointerCancel")) {
+                                showcase.onWearPointerCancel();
+                            }
                             last_anim_time_s = null;
                             vsync.active = false;
                             vsync.fired = false;
+                            vsync.last_frame_time_ns = 0;
                             redraw_pending = false;
                             anim_frames = 0;
                             anim_dt_sum_ms = 0.0;
@@ -706,6 +710,14 @@ fn workerMain(arg: ?*anyopaque) callconv(.c) ?*anyopaque {
                             mouse_buttons.clear();
                             const was_scrolling_ic = touch_scroll.scrolling;
                             touch_scroll.reset();
+                            if (@hasDecl(ActiveShowcase, "onWearPointerCancel")) {
+                                const was_holding = if (@hasField(ActiveShowcase, "frunk_hold")) showcase.frunk_hold.holding else false;
+                                showcase.onWearPointerCancel();
+                                if (was_holding) {
+                                    rebuildShowcaseAndSync(&showcase, &arena, &scroller, &router, egl.width, egl.height, scale_factor);
+                                    arena.requestRedraw();
+                                }
+                            }
                             scroller.dragging = false;
                             if (was_scrolling_ic or scroller.offset < 0.0 or scroller.offset > scroller.max_scroll) {
                                 scroller.endDrag();
@@ -730,6 +742,14 @@ fn workerMain(arg: ?*anyopaque) callconv(.c) ?*anyopaque {
                             mouse_buttons.clear();
                             const was_scrolling_cp = touch_scroll.scrolling;
                             touch_scroll.reset();
+                            if (@hasDecl(ActiveShowcase, "onWearPointerCancel")) {
+                                const was_holding = if (@hasField(ActiveShowcase, "frunk_hold")) showcase.frunk_hold.holding else false;
+                                showcase.onWearPointerCancel();
+                                if (was_holding) {
+                                    rebuildShowcaseAndSync(&showcase, &arena, &scroller, &router, egl.width, egl.height, scale_factor);
+                                    arena.requestRedraw();
+                                }
+                            }
                             scroller.dragging = false;
                             if (was_scrolling_cp or scroller.offset < 0.0 or scroller.offset > scroller.max_scroll) {
                                 scroller.endDrag();
@@ -775,6 +795,14 @@ fn workerMain(arg: ?*anyopaque) callconv(.c) ?*anyopaque {
                                             const lh = @as(f32, @floatFromInt(egl.height)) / scale_factor;
                                             arena.layout(lw, lh);
                                         }
+                                        if (@hasDecl(ActiveShowcase, "onWearPointerCancel")) {
+                                            const stale_hold = if (@hasField(ActiveShowcase, "frunk_hold")) showcase.frunk_hold.holding else false;
+                                            showcase.onWearPointerCancel();
+                                            if (stale_hold) {
+                                                rebuildShowcaseAndSync(&showcase, &arena, &scroller, &router, egl.width, egl.height, scale_factor);
+                                                arena.requestRedraw();
+                                            }
+                                        }
                                         const pid = c.AMotionEvent_getPointerId(ev, 0);
                                         const px = c.AMotionEvent_getX(ev, 0) / scale_factor;
                                         const py = c.AMotionEvent_getY(ev, 0) / scale_factor;
@@ -783,6 +811,21 @@ fn workerMain(arg: ?*anyopaque) callconv(.c) ?*anyopaque {
                                         if (!is_touch) mouse_buttons.recordDown(pid, btn);
                                         if (showcase.handlePointerDown(px, py)) {
                                             touch_scroll.reset();
+                                            arena.requestRedraw();
+                                        } else if (btn == .primary and (if (@hasDecl(ActiveShowcase, "onWearPointerDown"))
+                                            showcase.onWearPointerDown(&arena, pid, px, py)
+                                        else
+                                            false))
+                                        {
+                                            touch_scroll.reset();
+                                            scroller.animating = false;
+                                            scroller.dragging = false;
+                                            scroller.velocity = 0.0;
+                                            if (!showcase.isAnimating()) last_anim_time_s = null;
+                                            anim_frames = 0;
+                                            anim_dt_sum_ms = 0.0;
+                                            anim_render_sum_ms = 0.0;
+                                            rebuildShowcaseAndSync(&showcase, &arena, &scroller, &router, egl.width, egl.height, scale_factor);
                                             arena.requestRedraw();
                                         } else if (is_touch) {
                                             const can_scroll = isTouchInScrollArea(&arena, &showcase, px, py);
@@ -839,9 +882,21 @@ fn workerMain(arg: ?*anyopaque) callconv(.c) ?*anyopaque {
                                         const is_touch = c.AMotionEvent_getToolType(ev, ptr_idx) != c.AMOTION_EVENT_TOOL_TYPE_MOUSE;
                                         const btn = MouseButtonTracker.buttonFromEvent(ev, is_touch);
                                         if (!is_touch) mouse_buttons.recordDown(pid, btn);
-                                        const allow_dispatch = if (is_touch) (touch_scroll.active_pointer == null and !touch_scroll.scrolling and !touch_scroll.caught_fling) else !touch_scroll.scrolling;
+                                        const hold_active = if (@hasField(ActiveShowcase, "frunk_hold")) showcase.frunk_hold.holding else false;
+                                        const allow_dispatch = !hold_active and (if (is_touch) (touch_scroll.active_pointer == null and !touch_scroll.scrolling and !touch_scroll.caught_fling) else !touch_scroll.scrolling);
                                         if (btn == .primary and showcase.handlePointerDown(px, py)) {
                                             touch_scroll.reset();
+                                            arena.requestRedraw();
+                                        } else if (allow_dispatch and btn == .primary and (if (@hasDecl(ActiveShowcase, "onWearPointerDown"))
+                                            showcase.onWearPointerDown(&arena, pid, px, py)
+                                        else
+                                            false))
+                                        {
+                                            touch_scroll.reset();
+                                            scroller.animating = false;
+                                            scroller.dragging = false;
+                                            scroller.velocity = 0.0;
+                                            rebuildShowcaseAndSync(&showcase, &arena, &scroller, &router, egl.width, egl.height, scale_factor);
                                             arena.requestRedraw();
                                         } else if (allow_dispatch) {
                                             router.dispatch(&arena, .{ .pointer_down = .{
@@ -863,6 +918,20 @@ fn workerMain(arg: ?*anyopaque) callconv(.c) ?*anyopaque {
                                         const px = c.AMotionEvent_getX(ev, i) / scale_factor;
                                         const py = c.AMotionEvent_getY(ev, i) / scale_factor;
                                         const is_touch = c.AMotionEvent_getToolType(ev, i) != c.AMOTION_EVENT_TOOL_TYPE_MOUSE;
+                                        if (@hasDecl(ActiveShowcase, "onWearPointerMove")) {
+                                            const was_holding = if (@hasField(ActiveShowcase, "frunk_hold"))
+                                                (showcase.frunk_hold.holding and showcase.frunk_hold.active_pointer_id != null and showcase.frunk_hold.active_pointer_id.? == pid)
+                                            else
+                                                false;
+                                            showcase.onWearPointerMove(&arena, pid, px, py);
+                                            if (was_holding) {
+                                                if (@hasField(ActiveShowcase, "frunk_hold") and !showcase.frunk_hold.holding) {
+                                                    rebuildShowcaseAndSync(&showcase, &arena, &scroller, &router, egl.width, egl.height, scale_factor);
+                                                    arena.requestRedraw();
+                                                }
+                                                continue;
+                                            }
+                                        }
                                         const is_active_scroll_ptr = is_touch and touch_scroll.active_pointer != null and touch_scroll.active_pointer.? == pid;
                                         if (is_active_scroll_ptr) {
                                             if (touch_scroll.scrolling) {
@@ -904,7 +973,27 @@ fn workerMain(arg: ?*anyopaque) callconv(.c) ?*anyopaque {
                                         const py = c.AMotionEvent_getY(ev, 0) / scale_factor;
                                         const is_touch = c.AMotionEvent_getToolType(ev, 0) != c.AMOTION_EVENT_TOOL_TYPE_MOUSE;
                                         const btn = if (is_touch) events.PointerButton.primary else mouse_buttons.takeUp(pid);
-                                        if (is_touch and touch_scroll.active_pointer != null and touch_scroll.active_pointer.? == pid) {
+                                        const was_hold_ptr = if (@hasField(ActiveShowcase, "frunk_hold"))
+                                            (showcase.frunk_hold.active_pointer_id != null and showcase.frunk_hold.active_pointer_id.? == pid)
+                                        else
+                                            false;
+                                        const was_holding = if (@hasField(ActiveShowcase, "frunk_hold"))
+                                            (was_hold_ptr and showcase.frunk_hold.holding)
+                                        else
+                                            false;
+                                        if (@hasDecl(ActiveShowcase, "onWearPointerUp")) {
+                                            showcase.onWearPointerUp(pid);
+                                            if (was_holding) {
+                                                rebuildShowcaseAndSync(&showcase, &arena, &scroller, &router, egl.width, egl.height, scale_factor);
+                                                arena.requestRedraw();
+                                            }
+                                        }
+                                        if (was_hold_ptr) {
+                                            if (scroller.offset < 0.0 or scroller.offset > scroller.max_scroll) {
+                                                scroller.endDrag();
+                                                if (scroller.isAnimating()) arena.requestRedraw();
+                                            }
+                                        } else if (is_touch and touch_scroll.active_pointer != null and touch_scroll.active_pointer.? == pid) {
                                             const was_scrolling = touch_scroll.scrolling;
                                             const was_caught = touch_scroll.caught_fling;
                                             touch_scroll.reset();
@@ -934,6 +1023,10 @@ fn workerMain(arg: ?*anyopaque) callconv(.c) ?*anyopaque {
                                                 .button = btn,
                                                 .is_touch = is_touch,
                                             } });
+                                            if (scroller.offset < 0.0 or scroller.offset > scroller.max_scroll) {
+                                                scroller.endDrag();
+                                                if (scroller.isAnimating()) arena.requestRedraw();
+                                            }
                                         }
                                         handled = 1;
                                     }
@@ -945,7 +1038,27 @@ fn workerMain(arg: ?*anyopaque) callconv(.c) ?*anyopaque {
                                         const py = c.AMotionEvent_getY(ev, ptr_idx) / scale_factor;
                                         const is_touch = c.AMotionEvent_getToolType(ev, ptr_idx) != c.AMOTION_EVENT_TOOL_TYPE_MOUSE;
                                         const btn = if (is_touch) events.PointerButton.primary else mouse_buttons.takeUp(pid);
-                                        if (is_touch and touch_scroll.active_pointer != null and touch_scroll.active_pointer.? == pid) {
+                                        const was_hold_ptr = if (@hasField(ActiveShowcase, "frunk_hold"))
+                                            (showcase.frunk_hold.active_pointer_id != null and showcase.frunk_hold.active_pointer_id.? == pid)
+                                        else
+                                            false;
+                                        const was_holding = if (@hasField(ActiveShowcase, "frunk_hold"))
+                                            (was_hold_ptr and showcase.frunk_hold.holding)
+                                        else
+                                            false;
+                                        if (@hasDecl(ActiveShowcase, "onWearPointerUp")) {
+                                            showcase.onWearPointerUp(pid);
+                                            if (was_holding) {
+                                                rebuildShowcaseAndSync(&showcase, &arena, &scroller, &router, egl.width, egl.height, scale_factor);
+                                                arena.requestRedraw();
+                                            }
+                                        }
+                                        if (was_hold_ptr) {
+                                            if (scroller.offset < 0.0 or scroller.offset > scroller.max_scroll) {
+                                                scroller.endDrag();
+                                                if (scroller.isAnimating()) arena.requestRedraw();
+                                            }
+                                        } else if (is_touch and touch_scroll.active_pointer != null and touch_scroll.active_pointer.? == pid) {
                                             var next_idx: ?usize = null;
                                             if (ptr_count > 1) {
                                                 var k: usize = 0;
@@ -998,11 +1111,23 @@ fn workerMain(arg: ?*anyopaque) callconv(.c) ?*anyopaque {
                                                 .button = btn,
                                                 .is_touch = is_touch,
                                             } });
+                                            if (touch_scroll.active_pointer == null and (scroller.offset < 0.0 or scroller.offset > scroller.max_scroll)) {
+                                                scroller.endDrag();
+                                                if (scroller.isAnimating()) arena.requestRedraw();
+                                            }
                                         }
                                         handled = 1;
                                     }
                                 },
                                 c.AMOTION_EVENT_ACTION_CANCEL => {
+                                    if (@hasDecl(ActiveShowcase, "onWearPointerCancel")) {
+                                        const was_holding = if (@hasField(ActiveShowcase, "frunk_hold")) showcase.frunk_hold.holding else false;
+                                        showcase.onWearPointerCancel();
+                                        if (was_holding) {
+                                            rebuildShowcaseAndSync(&showcase, &arena, &scroller, &router, egl.width, egl.height, scale_factor);
+                                            arena.requestRedraw();
+                                        }
+                                    }
                                     var i: usize = 0;
                                     while (i < ptr_count) : (i += 1) {
                                         const pid = c.AMotionEvent_getPointerId(ev, i);

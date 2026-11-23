@@ -21,6 +21,7 @@ pub const image_atlas = @import("image_atlas.zig");
 pub const ipc_bridge = @import("ipc_bridge.zig");
 pub const touch_ergonomics = @import("touch_ergonomics.zig");
 pub const wearos = @import("wearos.zig");
+pub const hold_confirm = @import("hold_confirm.zig");
 pub const wayland = @import("wayland.zig");
 pub const overlay = @import("overlay.zig");
 pub const multi_window = @import("multi_window.zig");
