@@ -90,8 +90,18 @@ fn clampDim(val: f32, min_v_raw: f32, max_v_raw: f32) f32 {
 }
 
 fn sanitizeUnit(v: f32) f32 {
-    if (!std.math.isFinite(v)) return 0.0;
-    return std.math.clamp(v, 0.0, 1.0);
+    if (!std.math.isFinite(v) or v <= 0.0) return 0.0;
+    if (v >= 1.0) return 1.0;
+    return v;
+}
+
+pub fn sanitizeColor(c: Color) Color {
+    return .{
+        sanitizeUnit(c[0]),
+        sanitizeUnit(c[1]),
+        sanitizeUnit(c[2]),
+        sanitizeUnit(c[3]),
+    };
 }
 
 fn sanitizeFontSize(v: f32) f32 {
@@ -104,7 +114,10 @@ fn linearToSrgb(c: f32) f32 {
     if (x <= 0.0031308) {
         return 12.92 * x;
     }
-    return 1.055 * std.math.pow(f32, x, 1.0 / 2.4) - 0.055;
+    if (x >= 1.0) {
+        return 1.0;
+    }
+    return sanitizeUnit(1.055 * std.math.pow(f32, x, 1.0 / 2.4) - 0.055);
 }
 
 fn srgbToLinear(c: f32) f32 {
@@ -112,7 +125,44 @@ fn srgbToLinear(c: f32) f32 {
     if (x <= 0.04045) {
         return x / 12.92;
     }
-    return std.math.pow(f32, (x + 0.055) / 1.055, 2.4);
+    if (x >= 1.0) {
+        return 1.0;
+    }
+    return sanitizeUnit(std.math.pow(f32, (x + 0.055) / 1.055, 2.4));
+}
+
+pub fn srgbToLinearColor(c: Color) Color {
+    return .{
+        srgbToLinear(c[0]),
+        srgbToLinear(c[1]),
+        srgbToLinear(c[2]),
+        sanitizeUnit(c[3]),
+    };
+}
+
+pub fn linearToSrgbColor(c: Color) Color {
+    return .{
+        linearToSrgb(c[0]),
+        linearToSrgb(c[1]),
+        linearToSrgb(c[2]),
+        sanitizeUnit(c[3]),
+    };
+}
+
+pub fn blendOverLinear(src_srgb: Color, dst_srgb: Color) Color {
+    const src = srgbToLinearColor(src_srgb);
+    const dst = srgbToLinearColor(dst_srgb);
+    const sa = src[3];
+    const da = dst[3];
+    const inv_sa = 1.0 - sa;
+    const out_a = sanitizeUnit(sa + da * inv_sa);
+    if (out_a <= 1e-6) {
+        return .{ 0.0, 0.0, 0.0, 0.0 };
+    }
+    const out_r = (src[0] * sa + dst[0] * da * inv_sa) / out_a;
+    const out_g = (src[1] * sa + dst[1] * da * inv_sa) / out_a;
+    const out_b = (src[2] * sa + dst[2] * da * inv_sa) / out_a;
+    return linearToSrgbColor(.{ out_r, out_g, out_b, out_a });
 }
 
 pub fn srgbToOklabL(color: Color) f32 {
@@ -389,7 +439,7 @@ pub const LayoutArena = struct {
             .label = desc.label,
             .sublabel = desc.sublabel,
             .font_size = sanitizeFontSize(desc.font_size),
-            .text_color = desc.text_color,
+            .text_color = sanitizeColor(desc.text_color),
             .width = sanitizeNonNeg(desc.width),
             .height = sanitizeNonNeg(desc.height),
             .flex = sanitizeNonNeg(desc.flex),
@@ -415,9 +465,9 @@ pub const LayoutArena = struct {
             .corner_radius = sanitizeNonNeg(desc.corner_radius),
             .border_width = sanitizeNonNeg(desc.border_width),
             .shadow_blur = sanitizeNonNeg(desc.shadow_blur),
-            .fill = desc.fill,
-            .border = desc.border,
-            .accent = desc.accent,
+            .fill = sanitizeColor(desc.fill),
+            .border = sanitizeColor(desc.border),
+            .accent = sanitizeColor(desc.accent),
             .checked = desc.checked,
             .slider_val = sanitizeUnit(desc.slider_val),
             .disabled = desc.disabled,
@@ -1510,9 +1560,14 @@ pub const LayoutArena = struct {
 
     fn pushQuad(out_buf: []QuadInstance, count: *usize, quad: QuadInstance, active_clip: [4]f32) void {
         if (count.* >= out_buf.len) return;
+        for (quad.pos_size) |v| {
+            if (!std.math.isFinite(v)) return;
+        }
         if (quad.pos_size[2] <= 0.0 or quad.pos_size[3] <= 0.0) return;
         if (isClipEmpty(active_clip)) return;
         var q = quad;
+        q.color = sanitizeColor(q.color);
+        q.border_color = sanitizeColor(q.border_color);
         q.params[0] = sanitizeNonNeg(q.params[0]);
         q.params[1] = sanitizeNonNeg(q.params[1]);
         q.params[2] = sanitizeNonNeg(q.params[2]);

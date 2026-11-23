@@ -82,6 +82,18 @@ const vs_source: [*:0]const u8 =
     \\flat out vec4 v_clip_rect;
     \\
     \\void main() {
+    \\    if (any(isnan(a_pos_size)) || any(isinf(a_pos_size)) || any(isnan(a_params)) || any(isinf(a_params))) {
+    \\        gl_Position = vec4(-2.0, -2.0, 0.0, 1.0);
+    \\        v_local_px = vec2(0.0);
+    \\        v_half_size = vec2(0.0);
+    \\        v_uv = vec2(0.0);
+    \\        v_color = vec4(0.0);
+    \\        v_border_color = vec4(0.0);
+    \\        v_params = vec4(0.0);
+    \\        v_frag_px = vec2(-1.0);
+    \\        v_clip_rect = vec4(0.0);
+    \\        return;
+    \\    }
     \\    vec2 half_size = max(a_pos_size.zw, vec2(0.0)) * 0.5;
     \\    vec2 center = a_pos_size.xy + half_size;
     \\    bool is_glyph = a_params.w > 0.5;
@@ -123,6 +135,53 @@ const fs_source: [*:0]const u8 =
     \\
     \\out vec4 frag_color;
     \\
+    \\float sanitizeUnit(float c) {
+    \\    if (isnan(c) || isinf(c) || c <= 0.0) {
+    \\        return 0.0;
+    \\    }
+    \\    if (c >= 1.0) {
+    \\        return 1.0;
+    \\    }
+    \\    return c;
+    \\}
+    \\
+    \\float srgbToLinearChannel(float c) {
+    \\    float x = sanitizeUnit(c);
+    \\    if (x <= 0.04045) {
+    \\        return x / 12.92;
+    \\    }
+    \\    if (x >= 1.0) {
+    \\        return 1.0;
+    \\    }
+    \\    return sanitizeUnit(pow((x + 0.055) / 1.055, 2.4));
+    \\}
+    \\
+    \\vec3 srgbToLinear(vec3 c) {
+    \\    return vec3(srgbToLinearChannel(c.r), srgbToLinearChannel(c.g), srgbToLinearChannel(c.b));
+    \\}
+    \\
+    \\float linearToSrgbChannel(float c) {
+    \\    float x = sanitizeUnit(c);
+    \\    if (x <= 0.0031308) {
+    \\        return 12.92 * x;
+    \\    }
+    \\    if (x >= 1.0) {
+    \\        return 1.0;
+    \\    }
+    \\    return sanitizeUnit(1.055 * pow(x, 1.0 / 2.4) - 0.055);
+    \\}
+    \\
+    \\vec3 linearToSrgb(vec3 c) {
+    \\    return vec3(linearToSrgbChannel(c.r), linearToSrgbChannel(c.g), linearToSrgbChannel(c.b));
+    \\}
+    \\
+    \\float safeSmoothstep(float edge0, float edge1, float x) {
+    \\    if (edge1 <= edge0) {
+    \\        return x >= edge1 ? 1.0 : 0.0;
+    \\    }
+    \\    return smoothstep(edge0, edge1, x);
+    \\}
+    \\
     \\float sdRoundedBox(vec2 p, vec2 b, float r) {
     \\    vec2 q = abs(p) - b + r;
     \\    return min(max(q.x, q.y), 0.0) + length(max(q, 0.0)) - r;
@@ -135,11 +194,16 @@ const fs_source: [*:0]const u8 =
     \\    }
     \\    if (v_params.w > 0.5) {
     \\        float cov = texture(u_atlas, v_uv).r;
-    \\        float out_a = v_color.a * cov;
-    \\        if (out_a < 0.001) {
+    \\        float out_a = sanitizeUnit(v_color.a) * cov;
+    \\        if (out_a < 0.0001) {
     \\            discard;
     \\        }
-    \\        frag_color = vec4(v_color.rgb, out_a);
+    \\        frag_color = vec4(
+    \\            sanitizeUnit(v_color.r),
+    \\            sanitizeUnit(v_color.g),
+    \\            sanitizeUnit(v_color.b),
+    \\            out_a
+    \\        );
     \\        return;
     \\    }
     \\
@@ -148,14 +212,16 @@ const fs_source: [*:0]const u8 =
     \\    float blur = max(v_params.z, 0.0);
     \\
     \\    float d = sdRoundedBox(v_local_px, v_half_size, radius);
-    \\    float body_cov = 1.0 - smoothstep(-0.5, 0.5, d);
+    \\    float body_cov = 1.0 - safeSmoothstep(-0.5, 0.5, d);
     \\
-    \\    vec4 fill_pm = vec4(v_color.rgb * v_color.a, v_color.a);
-    \\    vec4 border_pm = vec4(v_border_color.rgb * v_border_color.a, v_border_color.a);
+    \\    float fill_a = sanitizeUnit(v_color.a);
+    \\    float border_a = sanitizeUnit(v_border_color.a);
+    \\    vec4 fill_pm = vec4(srgbToLinear(v_color.rgb) * fill_a, fill_a);
+    \\    vec4 border_pm = vec4(srgbToLinear(v_border_color.rgb) * border_a, border_a);
     \\
     \\    vec4 body_pm = fill_pm;
     \\    if (bw > 0.05) {
-    \\        float border_t = smoothstep(-bw - 0.5, -bw + 0.5, d);
+    \\        float border_t = safeSmoothstep(-bw - 0.5, -bw + 0.5, d);
     \\        body_pm = mix(fill_pm, border_pm, border_t);
     \\    }
     \\    vec4 fg_pm = body_pm * body_cov;
@@ -163,15 +229,15 @@ const fs_source: [*:0]const u8 =
     \\    float shadow_alpha = 0.0;
     \\    if (blur > 0.5) {
     \\        float d_shadow = sdRoundedBox(v_local_px - vec2(0.0, blur * 0.25), v_half_size, radius);
-    \\        shadow_alpha = (1.0 - smoothstep(-blur * 0.35, blur * 1.15, d_shadow)) * 0.32;
+    \\        shadow_alpha = (1.0 - safeSmoothstep(-blur * 0.35, blur * 1.15, d_shadow)) * 0.32;
     \\    }
-    \\    vec4 shadow_pm = vec4(vec3(0.03, 0.04, 0.06) * shadow_alpha, shadow_alpha);
+    \\    vec4 shadow_pm = vec4(srgbToLinear(vec3(0.03, 0.04, 0.06)) * shadow_alpha, shadow_alpha);
     \\
     \\    vec4 out_pm = fg_pm + shadow_pm * (1.0 - fg_pm.a);
-    \\    if (out_pm.a < 0.001) {
+    \\    if (out_pm.a < 0.0001) {
     \\        discard;
     \\    }
-    \\    frag_color = vec4(out_pm.rgb / out_pm.a, out_pm.a);
+    \\    frag_color = vec4(linearToSrgb(out_pm.rgb / out_pm.a), out_pm.a);
     \\}
 ;
 

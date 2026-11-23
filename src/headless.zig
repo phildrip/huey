@@ -639,14 +639,7 @@ fn clampColor(c: core.Color) core.Color {
 }
 
 fn compositeOver(fg: core.Color, bg: core.Color) core.Color {
-    const a = std.math.clamp(fg[3], 0.0, 1.0);
-    const inv_a = 1.0 - a;
-    return .{
-        std.math.clamp(fg[0] * a + bg[0] * inv_a, 0.0, 1.0),
-        std.math.clamp(fg[1] * a + bg[1] * inv_a, 0.0, 1.0),
-        std.math.clamp(fg[2] * a + bg[2] * inv_a, 0.0, 1.0),
-        std.math.clamp(a + bg[3] * inv_a, 0.0, 1.0),
-    };
+    return core.blendOverLinear(fg, bg);
 }
 
 fn resolveEffectiveBg(node_idx: u16, parents: []const ?u16, fills: []const core.Color) core.Color {
@@ -830,18 +823,21 @@ fn rasterizeQuad(buf: []u8, phys_w: usize, phys_h: usize, q: core.QuadInstance) 
     const y1: usize = @intFromFloat(std.math.clamp(max_y_f, 0.0, max_h_f));
     if (x1 <= x0 or y1 <= y0) return;
 
+    const col_lin = core.srgbToLinearColor(col);
+    const bcol_lin = core.srgbToLinearColor(bcol);
     const fill_pm = [4]f32{
-        col[0] * col[3],
-        col[1] * col[3],
-        col[2] * col[3],
-        col[3],
+        col_lin[0] * col_lin[3],
+        col_lin[1] * col_lin[3],
+        col_lin[2] * col_lin[3],
+        col_lin[3],
     };
     const border_pm = [4]f32{
-        bcol[0] * bcol[3],
-        bcol[1] * bcol[3],
-        bcol[2] * bcol[3],
-        bcol[3],
+        bcol_lin[0] * bcol_lin[3],
+        bcol_lin[1] * bcol_lin[3],
+        bcol_lin[2] * bcol_lin[3],
+        bcol_lin[3],
     };
+    const shadow_lin = core.srgbToLinearColor(.{ 0.03, 0.04, 0.06, 1.0 });
 
     for (y0..y1) |py| {
         const py_center = @as(f32, @floatFromInt(py)) + 0.5;
@@ -873,9 +869,9 @@ fn rasterizeQuad(buf: []u8, phys_w: usize, phys_h: usize, q: core.QuadInstance) 
                 shadow_alpha = (1.0 - smoothstep(-blur * 0.35, blur * 1.15, d_shadow)) * 0.32;
             }
             const shadow_pm = [4]f32{
-                0.03 * shadow_alpha,
-                0.04 * shadow_alpha,
-                0.06 * shadow_alpha,
+                shadow_lin[0] * shadow_alpha,
+                shadow_lin[1] * shadow_alpha,
+                shadow_lin[2] * shadow_alpha,
                 shadow_alpha,
             };
 
@@ -888,19 +884,28 @@ fn rasterizeQuad(buf: []u8, phys_w: usize, phys_h: usize, q: core.QuadInstance) 
             };
 
             const out_a = out_pm[3];
-            if (out_a < 0.001) continue;
+            if (out_a < 1e-4) continue;
 
-            const inv_a = 1.0 - out_a;
+            const out_srgb = core.linearToSrgbColor(.{
+                out_pm[0] / out_a,
+                out_pm[1] / out_a,
+                out_pm[2] / out_a,
+                out_a,
+            });
+
             const off = (py * phys_w + px) * 4;
-            const dst_r = @as(f32, @floatFromInt(buf[off + 0])) / 255.0;
-            const dst_g = @as(f32, @floatFromInt(buf[off + 1])) / 255.0;
-            const dst_b = @as(f32, @floatFromInt(buf[off + 2])) / 255.0;
-            const dst_a = @as(f32, @floatFromInt(buf[off + 3])) / 255.0;
+            const dst_srgb = core.Color{
+                @as(f32, @floatFromInt(buf[off + 0])) / 255.0,
+                @as(f32, @floatFromInt(buf[off + 1])) / 255.0,
+                @as(f32, @floatFromInt(buf[off + 2])) / 255.0,
+                @as(f32, @floatFromInt(buf[off + 3])) / 255.0,
+            };
+            const blended = core.blendOverLinear(out_srgb, dst_srgb);
 
-            buf[off + 0] = floatToU8(out_pm[0] + dst_r * inv_a);
-            buf[off + 1] = floatToU8(out_pm[1] + dst_g * inv_a);
-            buf[off + 2] = floatToU8(out_pm[2] + dst_b * inv_a);
-            buf[off + 3] = floatToU8(out_a + dst_a * inv_a);
+            buf[off + 0] = floatToU8(blended[0]);
+            buf[off + 1] = floatToU8(blended[1]);
+            buf[off + 2] = floatToU8(blended[2]);
+            buf[off + 3] = floatToU8(blended[3]);
         }
     }
 }
