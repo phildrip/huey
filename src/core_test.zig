@@ -1,8 +1,8 @@
 const std = @import("std");
 const core = @import("core.zig");
 
-test "QuadInstance is 80-byte ABI aligned for UberQuad shader" {
-    try std.testing.expectEqual(@as(usize, 80), @sizeOf(core.QuadInstance));
+test "QuadInstance is 96-byte ABI aligned for UberQuad shader" {
+    try std.testing.expectEqual(@as(usize, 96), @sizeOf(core.QuadInstance));
 }
 
 test "physical pixel snapping preserves crisp edges at fractional and 2x DPI" {

@@ -20,6 +20,7 @@ pub const QuadInstance = extern struct {
     color: [4]f32,
     border_color: [4]f32,
     params: [4]f32, // [corner_radius, border_width, shadow_blur, mode (0=SDF, 1=glyph)]
+    clip_rect: [4]f32 = .{ -1e9, -1e9, 1e9, 1e9 }, // [min_x, min_y, max_x, max_y] in physical pixels
 };
 
 fn hexColor(comptime rgb: u24) Color {
@@ -257,6 +258,15 @@ pub const NodeDesc = struct {
     focusable: ?bool = null,
     roving_group: bool = false,
     roving_active_child: ?NodeId = null,
+    clip_children: bool = false,
+    scroll_x: f32 = 0.0,
+    scroll_y: f32 = 0.0,
+};
+
+pub const ScrollProps = struct {
+    clip_children: bool = false,
+    scroll_x: f32 = 0.0,
+    scroll_y: f32 = 0.0,
 };
 
 pub const FlexProps = struct {
@@ -310,6 +320,7 @@ pub const Node = struct {
     focusable: ?bool = null,
     roving_group: bool = false,
     roving_active_child: ?NodeId = null,
+    scroll_props: ScrollProps = .{},
     rect: Rect = .{},
 };
 
@@ -413,6 +424,11 @@ pub const LayoutArena = struct {
             .focusable = desc.focusable,
             .roving_group = desc.roving_group,
             .roving_active_child = desc.roving_active_child,
+            .scroll_props = .{
+                .clip_children = desc.clip_children,
+                .scroll_x = sanitizeFinite(desc.scroll_x),
+                .scroll_y = sanitizeFinite(desc.scroll_y),
+            },
         });
         if (self.root_index == null) {
             self.root_index = idx;
@@ -479,11 +495,14 @@ pub const LayoutArena = struct {
         const gap = sanitizeNonNeg(slice.items(.gap)[idx]);
 
         const first_child = slice.items(.first_child)[idx] orelse return;
+        const sp = slice.items(.scroll_props)[idx];
+        const sx = sanitizeFinite(sp.scroll_x);
+        const sy = sanitizeFinite(sp.scroll_y);
 
         const pad_x = @min(padding, parent_rect.w * 0.5);
         const pad_y = @min(padding, parent_rect.h * 0.5);
-        const inner_x = parent_rect.x + pad_x;
-        const inner_y = parent_rect.y + pad_y;
+        const inner_x = clampF32(@as(f64, sanitizeFinite(parent_rect.x)) + @as(f64, pad_x) - @as(f64, sx));
+        const inner_y = clampF32(@as(f64, sanitizeFinite(parent_rect.y)) + @as(f64, pad_y) - @as(f64, sy));
         const inner_w = @max(0.0, parent_rect.w - pad_x * 2.0);
         const inner_h = @max(0.0, parent_rect.h - pad_y * 2.0);
 
@@ -1367,6 +1386,11 @@ pub const LayoutArena = struct {
         return self.nodes.items(.roving_group)[idx];
     }
 
+    pub fn isClipChildren(self: *const LayoutArena, id: NodeId) bool {
+        const idx = self.resolveIndex(id) orelse return false;
+        return self.nodes.items(.scroll_props)[idx].clip_children;
+    }
+
     pub fn getRovingActiveChild(self: *const LayoutArena, id: NodeId) ?NodeId {
         const idx = self.resolveIndex(id) orelse return null;
         return self.nodes.items(.roving_active_child)[idx];
@@ -1421,6 +1445,25 @@ pub const LayoutArena = struct {
         return self.setSliderValue(id, sliderValueFromX(r, x));
     }
 
+    pub fn setScroll(self: *LayoutArena, id: NodeId, sx: f32, sy: f32) void {
+        const idx = self.resolveIndex(id) orelse return;
+        const clean_x = sanitizeFinite(sx);
+        const clean_y = sanitizeFinite(sy);
+        const sp = &self.nodes.items(.scroll_props)[idx];
+        if (sp.scroll_x != clean_x or sp.scroll_y != clean_y) {
+            sp.scroll_x = clean_x;
+            sp.scroll_y = clean_y;
+            self.layout_dirty = true;
+            self.redraw_needed = true;
+        }
+    }
+
+    pub fn getScroll(self: *const LayoutArena, id: NodeId) ?[2]f32 {
+        const idx = self.resolveIndex(id) orelse return null;
+        const sp = self.nodes.items(.scroll_props)[idx];
+        return .{ sp.scroll_x, sp.scroll_y };
+    }
+
     pub fn needsRedraw(self: *const LayoutArena) bool {
         return self.redraw_needed;
     }
@@ -1433,15 +1476,55 @@ pub const LayoutArena = struct {
         self.redraw_needed = false;
     }
 
-    fn pushQuad(out_buf: []QuadInstance, count: *usize, quad: QuadInstance) void {
+    const unclipped_rect: [4]f32 = .{ -1e9, -1e9, 1e9, 1e9 };
+
+    fn isClipEmpty(clip: [4]f32) bool {
+        return !(clip[2] > clip[0] and clip[3] > clip[1]);
+    }
+
+    fn intersectsClip(x0: f32, y0: f32, x1: f32, y1: f32, clip: [4]f32) bool {
+        return x1 > clip[0] and x0 < clip[2] and y1 > clip[1] and y0 < clip[3];
+    }
+
+    fn pushQuad(out_buf: []QuadInstance, count: *usize, quad: QuadInstance, active_clip: [4]f32) void {
         if (count.* >= out_buf.len) return;
         if (quad.pos_size[2] <= 0.0 or quad.pos_size[3] <= 0.0) return;
+        if (isClipEmpty(active_clip)) return;
         var q = quad;
         q.params[0] = sanitizeNonNeg(q.params[0]);
         q.params[1] = sanitizeNonNeg(q.params[1]);
         q.params[2] = sanitizeNonNeg(q.params[2]);
+        const is_glyph = q.params[3] > 0.5;
+        const pad: f32 = if (is_glyph) 0.0 else (q.params[2] * 1.5 + 2.0);
+        if (!intersectsClip(
+            q.pos_size[0] - pad,
+            q.pos_size[1] - pad,
+            q.pos_size[0] + q.pos_size[2] + pad,
+            q.pos_size[1] + q.pos_size[3] + pad,
+            active_clip,
+        )) {
+            return;
+        }
+        q.clip_rect = active_clip;
         out_buf[count.*] = q;
         count.* += 1;
+    }
+
+    fn emitClippedText(
+        atlas: anytype,
+        text: []const u8,
+        lx: f32,
+        ly: f32,
+        font_size: f32,
+        scale: f32,
+        color: Color,
+        out_buf: []QuadInstance,
+        count: *usize,
+        frame_idx: u64,
+        active_clip: [4]f32,
+    ) void {
+        if (count.* >= out_buf.len or isClipEmpty(active_clip)) return;
+        count.* += atlas.emitTextQuadsClipped(text, lx, ly, font_size, scale, color, active_clip, out_buf[count.*..], frame_idx);
     }
 
     pub fn emitQuads(self: *const LayoutArena, out_buf: []QuadInstance, scale_factor: f32) usize {
@@ -1462,15 +1545,15 @@ pub const LayoutArena = struct {
         if (@TypeOf(maybe_atlas) != ?noreturn) {
             if (maybe_atlas) |atlas| {
                 const epoch_before = atlas.repack_epoch;
-                self.emitNodeQuads(root, out_buf, &count, scale_factor, atlas_opt, frame_idx);
+                self.emitNodeQuads(root, out_buf, &count, scale_factor, atlas_opt, frame_idx, unclipped_rect);
                 if (atlas.repack_epoch != epoch_before) {
                     count = 0;
-                    self.emitNodeQuads(root, out_buf, &count, scale_factor, atlas_opt, frame_idx);
+                    self.emitNodeQuads(root, out_buf, &count, scale_factor, atlas_opt, frame_idx, unclipped_rect);
                 }
                 return count;
             }
         }
-        self.emitNodeQuads(root, out_buf, &count, scale_factor, atlas_opt, frame_idx);
+        self.emitNodeQuads(root, out_buf, &count, scale_factor, atlas_opt, frame_idx, unclipped_rect);
         return count;
     }
 
@@ -1496,6 +1579,7 @@ pub const LayoutArena = struct {
         scale: f32,
         atlas_opt: anytype,
         frame_idx: u64,
+        active_clip: [4]f32,
     ) void {
         if (count.* >= out_buf.len) return;
         const maybe_atlas = asOptionalAtlas(atlas_opt);
@@ -1527,7 +1611,7 @@ pub const LayoutArena = struct {
                             .color = fill,
                             .border_color = border,
                             .params = .{ radius * scale, bw * scale, blur * scale, 0.0 },
-                        });
+                        }, active_clip);
                     }
                     if (@TypeOf(maybe_atlas) != ?noreturn) {
                         if (maybe_atlas) |atlas| {
@@ -1539,9 +1623,9 @@ pub const LayoutArena = struct {
                                     const total_h = m.height + 2.0 + m_sub.height;
                                     const ly = rect.y + (rect.h - total_h) * 0.5;
                                     const lx = rect.x + @min(12.0, rect.w * 0.1);
-                                    count.* += atlas.emitTextQuads(label, lx, ly, font_size, scale, text_color, out_buf[count.*..], frame_idx);
+                                    emitClippedText(atlas, label, lx, ly, font_size, scale, text_color, out_buf, count, frame_idx, active_clip);
                                     if (count.* < out_buf.len) {
-                                        count.* += atlas.emitTextQuads(sublabel, lx, ly + m.height + 2.0, sub_fs, scale, Nord.snow_storm_0, out_buf[count.*..], frame_idx);
+                                        emitClippedText(atlas, sublabel, lx, ly + m.height + 2.0, sub_fs, scale, Nord.snow_storm_0, out_buf, count, frame_idx, active_clip);
                                     }
                                 } else {
                                     const ly = rect.y + (rect.h - m.height) * 0.5;
@@ -1549,7 +1633,7 @@ pub const LayoutArena = struct {
                                         rect.x + (rect.w - m.width) * 0.5
                                     else
                                         rect.x + @min(8.0, rect.w * 0.1);
-                                    count.* += atlas.emitTextQuads(label, lx, ly, font_size, scale, text_color, out_buf[count.*..], frame_idx);
+                                    emitClippedText(atlas, label, lx, ly, font_size, scale, text_color, out_buf, count, frame_idx, active_clip);
                                 }
                             }
                         }
@@ -1566,7 +1650,7 @@ pub const LayoutArena = struct {
                             .color = fill,
                             .border_color = eff_border,
                             .params = .{ radius * scale, eff_bw * scale, eff_blur * scale, 0.0 },
-                        });
+                        }, active_clip);
                         if (checked) {
                             const dot_s = @min(rect.w, rect.h) * 0.28;
                             const dot_rect = Rect{
@@ -1581,7 +1665,7 @@ pub const LayoutArena = struct {
                                 .color = Nord.snow_storm_2,
                                 .border_color = Nord.polar_night_0,
                                 .params = .{ (dot_s * 0.5) * scale, 1.0 * scale, 2.0 * scale, 0.0 },
-                            });
+                            }, active_clip);
                         }
                     } else {
                         const phys = snapRectToPhysical(rect, scale);
@@ -1591,7 +1675,7 @@ pub const LayoutArena = struct {
                             .color = fill,
                             .border_color = eff_border,
                             .params = .{ radius * scale, bw * scale, blur * scale, 0.0 },
-                        });
+                        }, active_clip);
 
                         // Leading accent indicator strip on left (only if wide enough)
                         if (rect.w >= 28.0) {
@@ -1610,7 +1694,7 @@ pub const LayoutArena = struct {
                                 .color = if (checked) accent else Nord.polar_night_3,
                                 .border_color = Nord.transparent,
                                 .params = .{ 2.0 * scale, 0.0, 0.0, 0.0 },
-                            });
+                            }, active_clip);
                         }
 
                         // Pill switch track clamped strictly inside rect bounds
@@ -1631,7 +1715,7 @@ pub const LayoutArena = struct {
                                 .color = if (checked) accent else Nord.polar_night_3,
                                 .border_color = if (checked) accent else Nord.polar_night_2,
                                 .params = .{ (pill_h * 0.5) * scale, 1.0 * scale, 0.0, 0.0 },
-                            });
+                            }, active_clip);
 
                             const pad = @min(3.0, @min(pill_w, pill_h) * 0.2);
                             const knob_d = @max(0.0, @min(pill_h, pill_w) - pad * 2.0);
@@ -1645,7 +1729,7 @@ pub const LayoutArena = struct {
                                     .color = Nord.snow_storm_2,
                                     .border_color = Nord.transparent,
                                     .params = .{ (knob_d * 0.5) * scale, 0.0, 2.0 * scale, 0.0 },
-                                });
+                                }, active_clip);
                             }
                         }
 
@@ -1655,7 +1739,7 @@ pub const LayoutArena = struct {
                                     const m = atlas.measureText(label, font_size, scale);
                                     const lx = rect.x + 28.0;
                                     const ly = rect.y + (rect.h - m.height) * 0.5;
-                                    count.* += atlas.emitTextQuads(label, lx, ly, font_size, scale, text_color, out_buf[count.*..], frame_idx);
+                                    emitClippedText(atlas, label, lx, ly, font_size, scale, text_color, out_buf, count, frame_idx, active_clip);
                                 }
                             }
                         }
@@ -1668,7 +1752,7 @@ pub const LayoutArena = struct {
                         .color = fill,
                         .border_color = border,
                         .params = .{ radius * scale, bw * scale, blur * scale, 0.0 },
-                    });
+                    }, active_clip);
 
                     const has_label = (label.len > 0 and rect.w >= 100.0 and rect.h >= 40.0);
                     const track_center_y = if (has_label) rect.y + rect.h * 0.68 else rect.y + rect.h * 0.5;
@@ -1683,7 +1767,7 @@ pub const LayoutArena = struct {
                             .color = Nord.polar_night_0,
                             .border_color = Nord.polar_night_3,
                             .params = .{ (track_h * 0.5) * scale, 1.0 * scale, 0.0, 0.0 },
-                        });
+                        }, active_clip);
 
                         const raw_fill_w = tb.w * slider_val;
                         const fill_w = if (slider_val > 0.001)
@@ -1697,7 +1781,7 @@ pub const LayoutArena = struct {
                                 .color = accent,
                                 .border_color = Nord.transparent,
                                 .params = .{ (track_h * 0.5) * scale, 0.0, 0.0, 0.0 },
-                            });
+                            }, active_clip);
                         }
                     }
 
@@ -1725,7 +1809,7 @@ pub const LayoutArena = struct {
                             .color = Nord.snow_storm_2,
                             .border_color = accent,
                             .params = .{ (knob_d * 0.5) * scale, 2.0 * scale, 4.0 * scale, 0.0 },
-                        });
+                        }, active_clip);
                     }
 
                     if (@TypeOf(maybe_atlas) != ?noreturn) {
@@ -1733,7 +1817,7 @@ pub const LayoutArena = struct {
                             if (has_label and count.* < out_buf.len) {
                                 const lx = tb.x;
                                 const ly = rect.y + 8.0;
-                                count.* += atlas.emitTextQuads(label, lx, ly, font_size, scale, text_color, out_buf[count.*..], frame_idx);
+                                emitClippedText(atlas, label, lx, ly, font_size, scale, text_color, out_buf, count, frame_idx, active_clip);
                             }
                         }
                     }
@@ -1745,7 +1829,7 @@ pub const LayoutArena = struct {
                         .color = fill,
                         .border_color = border,
                         .params = .{ radius * scale, bw * scale, blur * scale, 0.0 },
-                    });
+                    }, active_clip);
 
                     if (slider_val > 0.001) {
                         const inner_pad_x = @min(3.0, rect.w * 0.25);
@@ -1766,7 +1850,7 @@ pub const LayoutArena = struct {
                                 .color = accent,
                                 .border_color = Nord.transparent,
                                 .params = .{ inner_r * scale, 0.0, 0.0, 0.0 },
-                            });
+                            }, active_clip);
                         }
                     }
 
@@ -1776,7 +1860,7 @@ pub const LayoutArena = struct {
                                 const m = atlas.measureText(label, font_size, scale);
                                 const lx = rect.x + @max(4.0, (rect.w - m.width) * 0.5);
                                 const ly = rect.y + (rect.h - m.height) * 0.5;
-                                count.* += atlas.emitTextQuads(label, lx, ly, font_size, scale, text_color, out_buf[count.*..], frame_idx);
+                                emitClippedText(atlas, label, lx, ly, font_size, scale, text_color, out_buf, count, frame_idx, active_clip);
                             }
                         }
                     }
@@ -1784,10 +1868,22 @@ pub const LayoutArena = struct {
             }
         }
 
+        var child_clip = active_clip;
+        if (slice.items(.scroll_props)[idx].clip_children) {
+            const phys = snapRectToPhysical(rect, scale);
+            child_clip = .{
+                @max(active_clip[0], phys.x),
+                @max(active_clip[1], phys.y),
+                @min(active_clip[2], phys.x + phys.w),
+                @min(active_clip[3], phys.y + phys.h),
+            };
+            if (isClipEmpty(child_clip)) return;
+        }
+
         const next_siblings = slice.items(.next_sibling);
         var cur: ?u16 = slice.items(.first_child)[idx];
         while (cur) |c| : (cur = next_siblings[c]) {
-            self.emitNodeQuads(c, out_buf, count, scale, atlas_opt, frame_idx);
+            self.emitNodeQuads(c, out_buf, count, scale, atlas_opt, frame_idx, child_clip);
             if (count.* >= out_buf.len) break;
         }
     }
@@ -1812,13 +1908,16 @@ pub const LayoutArena = struct {
     }
 
     fn hitTestNodePure(self: *const LayoutArena, idx: u16, x: f32, y: f32) ?NodeId {
-        const first_child = self.nodes.items(.first_child)[idx];
-        if (self.hitTestChildrenReversePure(first_child, x, y)) |res| {
-            return res;
-        }
-
         const slice = self.nodes.slice();
         const r = slice.items(.rect)[idx];
+        const clip_children = slice.items(.scroll_props)[idx].clip_children;
+        if (!clip_children or rectContains(r, x, y)) {
+            const first_child = slice.items(.first_child)[idx];
+            if (self.hitTestChildrenReversePure(first_child, x, y)) |res| {
+                return res;
+            }
+        }
+
         if (!rectContains(r, x, y)) return null;
 
         const kind = slice.items(.kind)[idx];
@@ -1849,13 +1948,16 @@ pub const LayoutArena = struct {
     }
 
     fn hitTestNode(self: *LayoutArena, idx: u16, x: f32, y: f32) ?HitResult {
-        const first_child = self.nodes.items(.first_child)[idx];
-        if (self.hitTestChildrenReverse(first_child, x, y)) |res| {
-            return res;
-        }
-
         const slice = self.nodes.slice();
         const r = slice.items(.rect)[idx];
+        const clip_children = slice.items(.scroll_props)[idx].clip_children;
+        if (!clip_children or rectContains(r, x, y)) {
+            const first_child = slice.items(.first_child)[idx];
+            if (self.hitTestChildrenReverse(first_child, x, y)) |res| {
+                return res;
+            }
+        }
+
         if (!rectContains(r, x, y)) return null;
 
         const kind = slice.items(.kind)[idx];

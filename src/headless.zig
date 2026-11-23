@@ -195,6 +195,7 @@ pub const HeadlessSession = struct {
         const fills = slice.items(.fill);
         const parents = slice.items(.parent);
         const rects = slice.items(.rect);
+        const scroll_props = slice.items(.scroll_props);
 
         for (0..n) |i| {
             const idx: u16 = @intCast(i);
@@ -204,19 +205,21 @@ pub const HeadlessSession = struct {
             const kind = kinds[i];
 
             if (parents[i]) |p_idx| {
-                const pr = rects[p_idx];
-                const ov_left = pr.x - r.x;
-                const ov_top = pr.y - r.y;
-                const ov_right = (r.x + r.w) - (pr.x + pr.w);
-                const ov_bottom = (r.y + r.h) - (pr.y + pr.h);
-                const max_ov = @max(@max(ov_left, ov_top), @max(ov_right, ov_bottom));
-                if (max_ov > 0.5) {
-                    pushDiagnostic(out_buf, &count, .{
-                        .code = .overflow,
-                        .id = id,
-                        .test_id = tid,
-                        .value = max_ov,
-                    });
+                if (!scroll_props[p_idx].clip_children) {
+                    const pr = rects[p_idx];
+                    const ov_left = pr.x - r.x;
+                    const ov_top = pr.y - r.y;
+                    const ov_right = (r.x + r.w) - (pr.x + pr.w);
+                    const ov_bottom = (r.y + r.h) - (pr.y + pr.h);
+                    const max_ov = @max(@max(ov_left, ov_top), @max(ov_right, ov_bottom));
+                    if (max_ov > 0.5) {
+                        pushDiagnostic(out_buf, &count, .{
+                            .code = .overflow,
+                            .id = id,
+                            .test_id = tid,
+                            .value = max_ov,
+                        });
+                    }
                 }
             }
 
@@ -234,18 +237,20 @@ pub const HeadlessSession = struct {
             if (is_interactive and r.w > 0.0 and r.h > 0.0) {
                 const cx = r.x + r.w * 0.5;
                 const cy = r.y + r.h * 0.5;
-                const in_viewport = cx >= 0.0 and cy >= 0.0 and cx <= self.viewport_w and cy <= self.viewport_h;
-                const hit_ok = if (in_viewport) blk: {
-                    const hit = self.arena.hitTest(cx, cy) orelse break :blk false;
-                    break :blk hitResolvesToTarget(&self.arena, hit, id);
-                } else false;
-                if (!hit_ok) {
-                    pushDiagnostic(out_buf, &count, .{
-                        .code = .occluded_target,
-                        .id = id,
-                        .test_id = tid,
-                        .value = 0.0,
-                    });
+                if (inAncestorClips(idx, cx, cy, parents, rects, scroll_props, n)) {
+                    const in_viewport = cx >= 0.0 and cy >= 0.0 and cx <= self.viewport_w and cy <= self.viewport_h;
+                    const hit_ok = if (in_viewport) blk: {
+                        const hit = self.arena.hitTest(cx, cy) orelse break :blk false;
+                        break :blk hitResolvesToTarget(&self.arena, hit, id);
+                    } else false;
+                    if (!hit_ok) {
+                        pushDiagnostic(out_buf, &count, .{
+                            .code = .occluded_target,
+                            .id = id,
+                            .test_id = tid,
+                            .value = 0.0,
+                        });
+                    }
                 }
             }
 
@@ -673,6 +678,33 @@ fn resolveEffectiveBg(node_idx: u16, parents: []const ?u16, fills: []const core.
     return base_bg;
 }
 
+fn inAncestorClips(
+    idx: u16,
+    cx: f32,
+    cy: f32,
+    parents: []const ?u16,
+    rects: []const core.Rect,
+    scroll_props: []const core.ScrollProps,
+    max_nodes: usize,
+) bool {
+    var anc_opt = parents[idx];
+    var steps: usize = 0;
+    while (anc_opt) |anc_idx| : (steps += 1) {
+        if (steps >= max_nodes) break;
+        if (scroll_props[anc_idx].clip_children) {
+            const ar = rects[anc_idx];
+            if (!(ar.w > 0.0 and ar.h > 0.0 and
+                cx >= ar.x and cx <= ar.x + ar.w and
+                cy >= ar.y and cy <= ar.y + ar.h))
+            {
+                return false;
+            }
+        }
+        anc_opt = parents[anc_idx];
+    }
+    return true;
+}
+
 fn hitResolvesToTarget(arena: *const core.LayoutArena, hit_id: core.NodeId, target_id: core.NodeId) bool {
     var cur_opt: ?core.NodeId = hit_id;
     while (cur_opt) |cur| {
@@ -755,13 +787,15 @@ fn mix4(a: [4]f32, b: [4]f32, t: f32) [4]f32 {
 
 fn rasterizeQuad(buf: []u8, phys_w: usize, phys_h: usize, q: core.QuadInstance) void {
     if (!allFinite4(q.pos_size) or !allFinite4(q.params) or
-        !allFinite4(q.color) or !allFinite4(q.border_color))
+        !allFinite4(q.color) or !allFinite4(q.border_color) or
+        !allFinite4(q.clip_rect))
     {
         return;
     }
     // Skip glyph quads when no atlas is bound in headless rasterizer.
     if (q.params[3] > 0.5) return;
     if (q.pos_size[2] <= 0.0 or q.pos_size[3] <= 0.0) return;
+    if (q.clip_rect[2] <= q.clip_rect[0] or q.clip_rect[3] <= q.clip_rect[1]) return;
 
     const col = clampColor(q.color);
     const bcol = clampColor(q.border_color);
@@ -776,10 +810,10 @@ fn rasterizeQuad(buf: []u8, phys_w: usize, phys_h: usize, q: core.QuadInstance) 
     const radius = @min(@max(q.params[0], 0.0), @min(half_w, half_h));
     const bw = @max(q.params[1], 0.0);
 
-    const min_x_f = @floor(cx - half_w - pad);
-    const min_y_f = @floor(cy - half_h - pad);
-    const max_x_f = @ceil(cx + half_w + pad);
-    const max_y_f = @ceil(cy + half_h + pad);
+    const min_x_f = @max(@floor(cx - half_w - pad), @floor(q.clip_rect[0]));
+    const min_y_f = @max(@floor(cy - half_h - pad), @floor(q.clip_rect[1]));
+    const max_x_f = @min(@ceil(cx + half_w + pad), @ceil(q.clip_rect[2]));
+    const max_y_f = @min(@ceil(cy + half_h + pad), @ceil(q.clip_rect[3]));
     if (!std.math.isFinite(min_x_f) or !std.math.isFinite(min_y_f) or
         !std.math.isFinite(max_x_f) or !std.math.isFinite(max_y_f))
     {
@@ -810,9 +844,13 @@ fn rasterizeQuad(buf: []u8, phys_w: usize, phys_h: usize, q: core.QuadInstance) 
     };
 
     for (y0..y1) |py| {
-        const local_y = (@as(f32, @floatFromInt(py)) + 0.5) - cy;
+        const py_center = @as(f32, @floatFromInt(py)) + 0.5;
+        if (py_center < q.clip_rect[1] or py_center > q.clip_rect[3]) continue;
+        const local_y = py_center - cy;
         for (x0..x1) |px| {
-            const local_x = (@as(f32, @floatFromInt(px)) + 0.5) - cx;
+            const px_center = @as(f32, @floatFromInt(px)) + 0.5;
+            if (px_center < q.clip_rect[0] or px_center > q.clip_rect[2]) continue;
+            const local_x = px_center - cx;
 
             const d = sdRoundedBox(local_x, local_y, half_w, half_h, radius);
             const body_cov = 1.0 - smoothstep(-0.5, 0.5, d);

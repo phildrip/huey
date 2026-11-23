@@ -280,3 +280,60 @@ test "LayoutArena skips labels on undersized toggles and sliders" {
         try std.testing.expectEqual(@as(f32, 0.0), q.params[3]);
     }
 }
+
+test "LayoutArena propagates active_clip onto glyph quads and culls offscreen text" {
+    const font_bytes = try loadHostFont(std.testing.allocator);
+    defer std.testing.allocator.free(font_bytes);
+
+    var atlas = try glyph_atlas.GlyphAtlas.init(std.testing.allocator, font_bytes, 512, 512);
+    defer atlas.deinit();
+
+    var arena = core.LayoutArena.init(std.testing.allocator);
+    defer arena.deinit();
+
+    const root = try arena.addNode(.{ .kind = .vstack, .padding = 20.0 });
+    const scroller = try arena.addChild(root, .{
+        .kind = .vstack,
+        .height = 60.0,
+        .clip_children = true,
+        .scroll_y = 60.0,
+    });
+    // Completely above clip (y = 20 - 60 = -40..10) -> all glyph quads culled
+    _ = try arena.addChild(scroller, .{ .kind = .card, .label = "CULLED", .height = 50.0 });
+    // Inside clip (y = 70 - 60 = 10..60) -> glyph quads stamped with [20, 20, 220, 80] at scale 1.0
+    _ = try arena.addChild(scroller, .{ .kind = .card, .label = "VISIBLE", .height = 50.0 });
+    arena.layout(240.0, 240.0);
+
+    var out: [128]core.QuadInstance = undefined;
+    const count = arena.emitQuadsWithAtlas(&out, 1.0, &atlas, 1);
+    try std.testing.expect(count > 0);
+    for (out[0..count]) |q| {
+        try std.testing.expectEqual(@as(f32, 1.0), q.params[3]);
+        try std.testing.expectEqual([4]f32{ 20.0, 20.0, 220.0, 80.0 }, q.clip_rect);
+        try std.testing.expect(q.pos_size[1] + q.pos_size[3] > 20.0);
+        try std.testing.expect(q.pos_size[1] < 80.0);
+    }
+}
+
+test "emitTextQuadsClipped skips off-clip leading glyphs without starving tiny out_buf or churning atlas" {
+    const font_bytes = try loadHostFont(std.testing.allocator);
+    defer std.testing.allocator.free(font_bytes);
+
+    var atlas = try glyph_atlas.GlyphAtlas.init(std.testing.allocator, font_bytes, 256, 256);
+    defer atlas.deinit();
+
+    // Measure prefix "XYZ" so we place the clip window starting right after "XYZ"
+    const m_prefix = atlas.measureText("XYZ", 18.0, 1.0);
+    const clip = [4]f32{ m_prefix.width + 2.0, 0.0, m_prefix.width + 200.0, 100.0 };
+
+    // Only 3 output slots: leading off-clip 'X', 'Y', 'Z' MUST NOT consume slots or rasterize into atlas!
+    var tiny: [3]core.QuadInstance = undefined;
+    const emitted = atlas.emitTextQuadsClipped("XYZab", 0.0, 10.0, 18.0, 1.0, core.Nord.snow_storm_2, clip, &tiny, 1);
+    try std.testing.expectEqual(@as(usize, 2), emitted);
+    for (tiny[0..emitted]) |q| {
+        try std.testing.expectEqual(clip, q.clip_rect);
+        try std.testing.expect(q.pos_size[0] + q.pos_size[2] > clip[0]);
+    }
+    // Only 'a' and 'b' should have been rasterized into the atlas (not 'X', 'Y', 'Z')
+    try std.testing.expectEqual(@as(usize, 2), atlas.entries.count());
+}

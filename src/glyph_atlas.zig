@@ -464,6 +464,8 @@ pub const GlyphAtlas = struct {
         };
     }
 
+    const unbounded_clip: [4]f32 = .{ -1e9, -1e9, 1e9, 1e9 };
+
     pub fn emitTextQuads(
         self: *GlyphAtlas,
         text: []const u8,
@@ -475,9 +477,35 @@ pub const GlyphAtlas = struct {
         out_buf: []core.QuadInstance,
         frame_idx: u64,
     ) usize {
+        return self.emitTextQuadsClipped(
+            text,
+            logical_x,
+            logical_y,
+            font_size_logical,
+            scale,
+            color,
+            unbounded_clip,
+            out_buf,
+            frame_idx,
+        );
+    }
+
+    pub fn emitTextQuadsClipped(
+        self: *GlyphAtlas,
+        text: []const u8,
+        logical_x: f32,
+        logical_y: f32,
+        font_size_logical: f32,
+        scale: f32,
+        color: core.Color,
+        active_clip: [4]f32,
+        out_buf: []core.QuadInstance,
+        frame_idx: u64,
+    ) usize {
         if (text.len == 0 or out_buf.len == 0) return 0;
         if (!std.math.isFinite(scale) or scale <= 0.0) return 0;
         if (!std.math.isFinite(logical_x) or !std.math.isFinite(logical_y)) return 0;
+        if (!(active_clip[2] > active_clip[0] and active_clip[3] > active_clip[1])) return 0;
 
         const q = quantizeSizePx(font_size_logical, scale);
         const stb_scale_px = c.stbtt_ScaleForPixelHeight(&self.font, q.px);
@@ -501,11 +529,38 @@ pub const GlyphAtlas = struct {
                 pen_x_px += @as(f32, @floatFromInt(kern)) * stb_scale_px;
             }
 
+            var adv_w: c_int = 0;
+            var lsb: c_int = 0;
+            c.stbtt_GetCodepointHMetrics(&self.font, @intCast(cp), &adv_w, &lsb);
+            const advance_px = @as(f32, @floatFromInt(adv_w)) * stb_scale_px;
+
+            var ix0: c_int = 0;
+            var iy0: c_int = 0;
+            var ix1: c_int = 0;
+            var iy1: c_int = 0;
+            c.stbtt_GetCodepointBitmapBox(&self.font, @intCast(cp), stb_scale_px, stb_scale_px, &ix0, &iy0, &ix1, &iy1);
+            const bw_i = ix1 - ix0;
+            const bh_i = iy1 - iy0;
+            if (bw_i <= 0 or bh_i <= 0) {
+                pen_x_px += advance_px;
+                prev_cp = cp;
+                continue;
+            }
+
+            const gx_pre = @round(pen_x_px + @as(f32, @floatFromInt(ix0)));
+            const gy_pre = @round(baseline_px + @as(f32, @floatFromInt(iy0)));
+            const gw_pre: f32 = @floatFromInt(bw_i);
+            const gh_pre: f32 = @floatFromInt(bh_i);
+            if (!(gx_pre + gw_pre > active_clip[0] and gx_pre < active_clip[2] and
+                gy_pre + gh_pre > active_clip[1] and gy_pre < active_clip[3]))
+            {
+                pen_x_px += advance_px;
+                prev_cp = cp;
+                continue;
+            }
+
             const g = self.getOrRasterize(cp, font_size_logical, scale, frame_idx) catch {
-                var adv_w: c_int = 0;
-                var lsb: c_int = 0;
-                c.stbtt_GetCodepointHMetrics(&self.font, @intCast(cp), &adv_w, &lsb);
-                pen_x_px += @as(f32, @floatFromInt(adv_w)) * stb_scale_px;
+                pen_x_px += advance_px;
                 prev_cp = cp;
                 continue;
             };
@@ -519,6 +574,7 @@ pub const GlyphAtlas = struct {
                     .color = color,
                     .border_color = core.Nord.transparent,
                     .params = .{ 0.0, 0.0, 0.0, 1.0 },
+                    .clip_rect = active_clip,
                 };
                 emitted += 1;
             }

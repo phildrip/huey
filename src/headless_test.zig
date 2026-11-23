@@ -392,3 +392,42 @@ test "Regression checks for adversarial findings: JSON escaping, strict errors, 
     try std.testing.expectEqual(@as(f32, 200.0), session.viewport_h);
     try std.testing.expectEqual(@as(f32, 2.0), session.scale_factor);
 }
+
+test "HeadlessSession.runDiagnostics skips overflow and occluded_target false positives inside clip_children scrollers" {
+    var session = try headless.HeadlessSession.init(std.testing.allocator, 300.0, 300.0, 1.0);
+    defer session.deinit();
+
+    const root = try session.arena.addNode(.{
+        .kind = .vstack,
+        .role = .container,
+        .test_id = "root",
+        .padding = 20.0,
+        .fill = core.Nord.polar_night_0,
+    });
+    const scroller = try session.arena.addChild(root, .{
+        .kind = .vstack,
+        .role = .container,
+        .test_id = "scroller",
+        .height = 100.0,
+        .clip_children = true,
+        .scroll_y = 60.0,
+        .fill = core.Nord.polar_night_1,
+    });
+    for ([_][]const u8{ "item0", "item1", "item2", "item3", "item4" }) |tid| {
+        _ = try session.arena.addChild(scroller, .{
+            .kind = .toggle,
+            .role = .switch_control,
+            .test_id = tid,
+            .height = 50.0,
+            .fill = core.Nord.polar_night_2,
+        });
+    }
+
+    _ = session.step(16.67);
+    var diags: [32]headless.Diagnostic = undefined;
+    const n_diag = session.runDiagnostics(&diags);
+    for (diags[0..n_diag]) |d| {
+        try std.testing.expect(d.code != .overflow);
+        try std.testing.expect(d.code != .occluded_target);
+    }
+}

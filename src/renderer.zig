@@ -70,6 +70,7 @@ const vs_source: [*:0]const u8 =
     \\layout(location = 3) in vec4 a_color;
     \\layout(location = 4) in vec4 a_border_color;
     \\layout(location = 5) in vec4 a_params;
+    \\layout(location = 6) in vec4 a_clip_rect;
     \\
     \\out vec2 v_local_px;
     \\out vec2 v_half_size;
@@ -77,6 +78,8 @@ const vs_source: [*:0]const u8 =
     \\out vec4 v_color;
     \\out vec4 v_border_color;
     \\out vec4 v_params;
+    \\out vec2 v_frag_px;
+    \\flat out vec4 v_clip_rect;
     \\
     \\void main() {
     \\    vec2 half_size = max(a_pos_size.zw, vec2(0.0)) * 0.5;
@@ -98,6 +101,8 @@ const vs_source: [*:0]const u8 =
     \\    v_color = a_color;
     \\    v_border_color = a_border_color;
     \\    v_params = vec4(max(a_params.x, 0.0), max(a_params.y, 0.0), blur, a_params.w);
+    \\    v_frag_px = frag_px;
+    \\    v_clip_rect = a_clip_rect;
     \\}
 ;
 
@@ -113,6 +118,8 @@ const fs_source: [*:0]const u8 =
     \\in vec4 v_color;
     \\in vec4 v_border_color;
     \\in vec4 v_params;
+    \\in vec2 v_frag_px;
+    \\flat in vec4 v_clip_rect;
     \\
     \\out vec4 frag_color;
     \\
@@ -122,6 +129,10 @@ const fs_source: [*:0]const u8 =
     \\}
     \\
     \\void main() {
+    \\    if (!(v_frag_px.x >= v_clip_rect.x && v_frag_px.y >= v_clip_rect.y &&
+    \\          v_frag_px.x <= v_clip_rect.z && v_frag_px.y <= v_clip_rect.w)) {
+    \\        discard;
+    \\    }
     \\    if (v_params.w > 0.5) {
     \\        float cov = texture(u_atlas, v_uv).r;
     \\        float out_a = v_color.a * cov;
@@ -265,6 +276,7 @@ pub const Renderer = struct {
         shd_desc.attrs[3] = .{ .base_type = sg.SG_SHADERATTRBASETYPE_FLOAT, .glsl_name = "a_color" };
         shd_desc.attrs[4] = .{ .base_type = sg.SG_SHADERATTRBASETYPE_FLOAT, .glsl_name = "a_border_color" };
         shd_desc.attrs[5] = .{ .base_type = sg.SG_SHADERATTRBASETYPE_FLOAT, .glsl_name = "a_params" };
+        shd_desc.attrs[6] = .{ .base_type = sg.SG_SHADERATTRBASETYPE_FLOAT, .glsl_name = "a_clip_rect" };
         shd_desc.uniform_blocks[0].stage = sg.SG_SHADERSTAGE_VERTEX;
         shd_desc.uniform_blocks[0].size = @sizeOf(VsParams);
         shd_desc.uniform_blocks[0].layout = sg.SG_UNIFORMLAYOUT_NATIVE;
@@ -331,6 +343,11 @@ pub const Renderer = struct {
         pip_desc.layout.attrs[5] = .{
             .buffer_index = 1,
             .offset = @offsetOf(core.QuadInstance, "params"),
+            .format = sg.SG_VERTEXFORMAT_FLOAT4,
+        };
+        pip_desc.layout.attrs[6] = .{
+            .buffer_index = 1,
+            .offset = @offsetOf(core.QuadInstance, "clip_rect"),
             .format = sg.SG_VERTEXFORMAT_FLOAT4,
         };
         pip_desc.color_count = 1;
