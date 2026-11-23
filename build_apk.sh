@@ -28,6 +28,7 @@ echo "[0/5] Running unit tests (src/core_test.zig, src/glyph_atlas_test.zig, src
 "$ZIG" test "$ROOT_DIR/src/a11y_test.zig"
 "$ZIG" test "$ROOT_DIR/src/image_atlas_test.zig"
 "$ZIG" test "$ROOT_DIR/src/ipc_bridge_test.zig"
+"$ZIG" test "$ROOT_DIR/src/touch_ergonomics_test.zig"
 
 SYSROOT_INC="$NDK/toolchains/llvm/prebuilt/linux-x86_64/sysroot/usr/include"
 TARGET_INC="$SYSROOT_INC/aarch64-linux-android"
