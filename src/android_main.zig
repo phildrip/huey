@@ -18,6 +18,7 @@ const c = @cImport({
     @cInclude("android/input.h");
     @cInclude("android/configuration.h");
     @cInclude("android/native_window.h");
+    @cInclude("android/choreographer.h");
     @cInclude("android/log.h");
 });
 
@@ -408,6 +409,21 @@ fn layoutAndSyncScroll(
     }
 }
 
+const VsyncState = struct {
+    posted: bool = false,
+    fired: bool = false,
+    frame_time_ns: i64 = 0,
+    last_frame_time_ns: i64 = 0,
+    active: bool = false,
+};
+
+fn onChoreographerFrame(frame_time_nanos: c_long, data: ?*anyopaque) callconv(.c) void {
+    const vs: *VsyncState = @ptrCast(@alignCast(data orelse return));
+    vs.posted = false;
+    vs.fired = true;
+    vs.frame_time_ns = @intCast(frame_time_nanos);
+}
+
 fn workerMain(arg: ?*anyopaque) callconv(.c) ?*anyopaque {
     const state: *AppState = @ptrCast(@alignCast(arg.?));
 
@@ -420,6 +436,7 @@ fn workerMain(arg: ?*anyopaque) callconv(.c) ?*anyopaque {
         _ = c.pthread_mutex_unlock(&state.mutex);
         return null;
     };
+    const choreographer = c.AChoreographer_getInstance();
     _ = c.ALooper_addFd(looper, state.msgread, LOOPER_ID_MAIN, c.ALOOPER_EVENT_INPUT, null, null);
 
     const config = c.AConfiguration_new() orelse {
@@ -479,6 +496,11 @@ fn workerMain(arg: ?*anyopaque) callconv(.c) ?*anyopaque {
     var mouse_buttons: MouseButtonTracker = .{};
     var scroller = virtual_scroll.InertialScroller.init(0.0);
     var touch_scroll: TouchScrollState = .{};
+    var vsync: VsyncState = .{};
+    var redraw_pending = false;
+    var anim_frames: u32 = 0;
+    var anim_dt_sum_ms: f64 = 0.0;
+    var anim_render_sum_ms: f64 = 0.0;
     var last_anim_time_s: ?f64 = null;
     var last_logged_slider_id: ?core.NodeId = null;
     var last_logged_slider_val: f32 = -1.0;
@@ -493,8 +515,21 @@ fn workerMain(arg: ?*anyopaque) callconv(.c) ?*anyopaque {
     var quit = false;
     while (!quit) {
         const has_surface = (window != null and egl.surface != c.EGL_NO_SURFACE and rend.initialized);
+        const wants_frame = has_surface and (scroller.isAnimating() or arena.needsRedraw());
+        if (wants_frame) {
+            if (choreographer) |ch| {
+                if (!vsync.posted) {
+                    c.AChoreographer_postFrameCallback(ch, onChoreographerFrame, &vsync);
+                    vsync.posted = true;
+                    if (!vsync.active) {
+                        vsync.last_frame_time_ns = 0;
+                        vsync.active = true;
+                    }
+                }
+            }
+        }
         const has_pending_input = if (input_queue) |q| (c.AInputQueue_hasEvents(q) > 0) else false;
-        const timeout_ms: c_int = if ((has_surface and (arena.needsRedraw() or scroller.isAnimating())) or has_pending_input) 0 else -1;
+        const timeout_ms: c_int = if (has_pending_input or (wants_frame and choreographer == null)) 0 else -1;
 
         var looper_events: c_int = 0;
         var out_data: ?*anyopaque = null;
@@ -557,6 +592,12 @@ fn workerMain(arg: ?*anyopaque) callconv(.c) ?*anyopaque {
                             mouse_buttons.clear();
                             touch_scroll.reset();
                             last_anim_time_s = null;
+                            vsync.active = false;
+                            vsync.fired = false;
+                            redraw_pending = false;
+                            anim_frames = 0;
+                            anim_dt_sum_ms = 0.0;
+                            anim_render_sum_ms = 0.0;
                             if (scroller.dragging or scroller.animating) {
                                 scroller.dragging = false;
                                 scroller.animating = false;
@@ -595,7 +636,9 @@ fn workerMain(arg: ?*anyopaque) callconv(.c) ?*anyopaque {
                         .redraw_needed => {
                             if (window != null and egl.surface != c.EGL_NO_SURFACE and rend.initialized) {
                                 arena.requestRedraw();
+                                redraw_pending = true;
                             } else {
+                                redraw_pending = false;
                                 signalRedrawAck(state);
                             }
                         },
@@ -693,6 +736,9 @@ fn workerMain(arg: ?*anyopaque) callconv(.c) ?*anyopaque {
                                             scroller.dragging = false;
                                             scroller.velocity = 0.0;
                                             last_anim_time_s = null;
+                                            anim_frames = 0;
+                                            anim_dt_sum_ms = 0.0;
+                                            anim_render_sum_ms = 0.0;
                                             touch_scroll.active_pointer = pid;
                                             touch_scroll.down_y = py;
                                             touch_scroll.down_t = motionEventSeconds(ev);
@@ -941,6 +987,9 @@ fn workerMain(arg: ?*anyopaque) callconv(.c) ?*anyopaque {
                                         } });
                                         touch_scroll.reset();
                                         last_anim_time_s = null;
+                                        anim_frames = 0;
+                                        anim_dt_sum_ms = 0.0;
+                                        anim_render_sum_ms = 0.0;
                                         scroller.onWheel(-@as(f64, dy) * 48.0);
                                         applyScroll(&arena, &scroller, egl.width, egl.height, scale_factor);
                                         handled = 1;
@@ -996,18 +1045,57 @@ fn workerMain(arg: ?*anyopaque) callconv(.c) ?*anyopaque {
         router.clearEvents();
 
         const has_surface_now = (window != null and egl.surface != c.EGL_NO_SURFACE and rend.initialized);
-        if (has_surface_now and scroller.isAnimating()) {
-            const now_s = monotonicSeconds();
-            const dt_s = if (last_anim_time_s) |prev_t| (now_s - prev_t) else (1.0 / 60.0);
-            last_anim_time_s = now_s;
-            _ = scroller.step(dt_s);
-            applyScroll(&arena, &scroller, egl.width, egl.height, scale_factor);
-            arena.requestRedraw();
-        } else {
+        var should_render = false;
+        var frame_was_animating = false;
+        var frame_dt_s: f64 = 1.0 / 60.0;
+
+        if (!has_surface_now) {
             last_anim_time_s = null;
+            vsync.active = false;
+            vsync.fired = false;
+            redraw_pending = false;
+            anim_frames = 0;
+            anim_dt_sum_ms = 0.0;
+            anim_render_sum_ms = 0.0;
+        } else if (choreographer == null) {
+            if (scroller.isAnimating()) {
+                const now_s = monotonicSeconds();
+                frame_dt_s = if (last_anim_time_s) |prev_t| (now_s - prev_t) else (1.0 / 60.0);
+                last_anim_time_s = now_s;
+                frame_was_animating = true;
+                _ = scroller.step(frame_dt_s);
+                applyScroll(&arena, &scroller, egl.width, egl.height, scale_factor);
+                arena.requestRedraw();
+            } else {
+                last_anim_time_s = null;
+            }
+            should_render = arena.needsRedraw();
+        } else {
+            if (vsync.fired) {
+                vsync.fired = false;
+                frame_dt_s = if (vsync.last_frame_time_ns > 0 and vsync.frame_time_ns > vsync.last_frame_time_ns)
+                    @as(f64, @floatFromInt(vsync.frame_time_ns - vsync.last_frame_time_ns)) / 1_000_000_000.0
+                else
+                    (1.0 / 60.0);
+                vsync.last_frame_time_ns = vsync.frame_time_ns;
+
+                if (scroller.isAnimating()) {
+                    frame_was_animating = true;
+                    _ = scroller.step(frame_dt_s);
+                    if (arena.getRoot()) |root| {
+                        arena.setScroll(root, 0.0, @floatCast(scroller.offset));
+                    }
+                    arena.requestRedraw();
+                }
+                if (arena.needsRedraw()) {
+                    should_render = true;
+                }
+            } else if (redraw_pending and arena.needsRedraw()) {
+                should_render = true;
+            }
         }
 
-        if (has_surface_now and arena.needsRedraw()) {
+        if (should_render) {
             var t0: c.struct_timespec = undefined;
             var t1: c.struct_timespec = undefined;
             _ = c.clock_gettime(c.CLOCK_MONOTONIC, &t0);
@@ -1049,6 +1137,7 @@ fn workerMain(arg: ?*anyopaque) callconv(.c) ?*anyopaque {
                     }
                 }
                 arena.requestRedraw();
+                redraw_pending = false;
                 signalRedrawAck(state);
             } else {
                 const prev_w = egl.width;
@@ -1060,6 +1149,7 @@ fn workerMain(arg: ?*anyopaque) callconv(.c) ?*anyopaque {
                 } else {
                     arena.consumeRedraw();
                 }
+                redraw_pending = false;
                 signalRedrawAck(state);
 
                 _ = c.clock_gettime(c.CLOCK_MONOTONIC, &t1);
@@ -1067,19 +1157,41 @@ fn workerMain(arg: ?*anyopaque) callconv(.c) ?*anyopaque {
                     (@as(i64, t1.tv_nsec) - @as(i64, t0.tv_nsec));
                 const dt_ms = @as(f64, @floatFromInt(dt_ns)) / 1_000_000.0;
 
-                logInfo("Frame rendered: %.3f ms | quads=%zu | viewport=%dx%d | scale=%.2f", .{
-                    dt_ms,
-                    quad_count,
-                    egl.width,
-                    egl.height,
-                    @as(f64, scale_factor),
-                });
+                if (frame_was_animating) {
+                    anim_frames += 1;
+                    anim_dt_sum_ms += frame_dt_s * 1000.0;
+                    anim_render_sum_ms += dt_ms;
+                    if (!scroller.isAnimating()) {
+                        const n_f64: f64 = @floatFromInt(anim_frames);
+                        logInfo("Fling settled: %u frames | avg=%.2f ms | vsync=%.2f ms | quads=%zu", .{
+                            anim_frames,
+                            anim_render_sum_ms / n_f64,
+                            anim_dt_sum_ms / n_f64,
+                            quad_count,
+                        });
+                        anim_frames = 0;
+                        anim_dt_sum_ms = 0.0;
+                        anim_render_sum_ms = 0.0;
+                    }
+                } else if (frame_idx <= 2) {
+                    logInfo("Frame rendered: %.3f ms | quads=%zu | viewport=%dx%d | scale=%.2f", .{
+                        dt_ms,
+                        quad_count,
+                        egl.width,
+                        egl.height,
+                        @as(f64, scale_factor),
+                    });
+                }
 
                 if (!dumped_initial_tree) {
                     dumped_initial_tree = true;
                     dumpSemanticTreeToLogcat(&arena);
                 }
             }
+        }
+
+        if (choreographer != null and !scroller.isAnimating() and !arena.needsRedraw()) {
+            vsync.active = false;
         }
     }
 
