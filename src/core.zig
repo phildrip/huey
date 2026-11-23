@@ -80,6 +80,31 @@ fn linearToSrgb(c: f32) f32 {
     return 1.055 * std.math.pow(f32, x, 1.0 / 2.4) - 0.055;
 }
 
+fn srgbToLinear(c: f32) f32 {
+    const x = sanitizeUnit(c);
+    if (x <= 0.04045) {
+        return x / 12.92;
+    }
+    return std.math.pow(f32, (x + 0.055) / 1.055, 2.4);
+}
+
+pub fn srgbToOklabL(color: Color) f32 {
+    const r = srgbToLinear(color[0]);
+    const g = srgbToLinear(color[1]);
+    const b = srgbToLinear(color[2]);
+
+    const l = 0.4122214708 * r + 0.5363325363 * g + 0.0514459929 * b;
+    const m = 0.2119034982 * r + 0.6806995451 * g + 0.1073969566 * b;
+    const s = 0.0883024619 * r + 0.2817188376 * g + 0.6299787005 * b;
+
+    const l_ = std.math.cbrt(@max(0.0, l));
+    const m_ = std.math.cbrt(@max(0.0, m));
+    const s_ = std.math.cbrt(@max(0.0, s));
+
+    const l_ok = 0.2104542553 * l_ + 0.7936177850 * m_ - 0.0040720468 * s_;
+    return sanitizeUnit(l_ok);
+}
+
 pub fn oklabToSrgb(l_ok: f32, a_ok: f32, b_ok: f32, alpha: f32) Color {
     const l_ = l_ok + 0.3963377774 * a_ok + 0.2158037573 * b_ok;
     const m_ = l_ok - 0.1055613458 * a_ok - 0.0638541728 * b_ok;
@@ -114,11 +139,21 @@ pub fn snapRectToPhysical(r: Rect, scale: f32) Rect {
     const y0 = @round(r.y * scale);
     const x1 = @round((r.x + w) * scale);
     const y1 = @round((r.y + h) * scale);
+    if (!std.math.isFinite(x0) or !std.math.isFinite(y0) or
+        !std.math.isFinite(x1) or !std.math.isFinite(y1))
+    {
+        return .{};
+    }
+    const pw = x1 - x0;
+    const ph = y1 - y0;
+    if (!std.math.isFinite(pw) or !std.math.isFinite(ph)) {
+        return .{};
+    }
     return .{
         .x = x0,
         .y = y0,
-        .w = @max(0.0, x1 - x0),
-        .h = @max(0.0, y1 - y0),
+        .w = @max(0.0, pw),
+        .h = @max(0.0, ph),
     };
 }
 
@@ -193,12 +228,12 @@ pub const Node = struct {
     rect: Rect = .{},
 };
 
-const TrackBounds = struct {
+pub const TrackBounds = struct {
     x: f32,
     w: f32,
 };
 
-fn sliderTrackBounds(rect: Rect) TrackBounds {
+pub fn sliderTrackBounds(rect: Rect) TrackBounds {
     const rw = sanitizeNonNeg(rect.w);
     const inset = @min(16.0, rw * 0.25);
     return .{
@@ -347,8 +382,8 @@ pub const LayoutArena = struct {
             while (cur) |c| : (cur = next_siblings[c]) {
                 const w = sanitizeNonNeg(widths[c]);
                 const h = sanitizeNonNeg(heights[c]);
-                const cw = if (w > 0.0) @min(w, inner_w) else inner_w;
-                const ch = if (h > 0.0) @min(h, inner_h) else inner_h;
+                const cw = if (w > 0.0) w else inner_w;
+                const ch = if (h > 0.0) h else inner_h;
                 rects[c] = .{ .x = inner_x, .y = inner_y, .w = cw, .h = ch };
                 self.layoutChildren(c);
             }
@@ -421,6 +456,19 @@ pub const LayoutArena = struct {
     pub fn getTestId(self: *const LayoutArena, id: NodeId) ?[]const u8 {
         const idx = self.resolveIndex(id) orelse return null;
         return self.nodes.items(.test_id)[idx];
+    }
+
+    pub fn findByTestId(self: *const LayoutArena, test_id: []const u8) ?NodeId {
+        if (test_id.len == 0) return null;
+        const slice = self.nodes.slice();
+        const test_ids = slice.items(.test_id);
+        const gens = slice.items(.gen);
+        for (test_ids, 0..) |tid, i| {
+            if (std.mem.eql(u8, tid, test_id)) {
+                return .{ .index = @intCast(i), .gen = gens[i] };
+            }
+        }
+        return null;
     }
 
     pub fn getParent(self: *const LayoutArena, id: NodeId) ?NodeId {
@@ -1286,11 +1334,18 @@ pub fn buildDemoScene(arena: *LayoutArena) !void {
         .{ "swatch.3_0", "swatch.3_1", "swatch.3_2", "swatch.3_3", "swatch.3_4", "swatch.3_5" },
     };
 
+    const swatch_row_ids = [4][]const u8{
+        "swatch.row_0",
+        "swatch.row_1",
+        "swatch.row_2",
+        "swatch.row_3",
+    };
+
     for (0..4) |row_i| {
         const row = try arena.addChild(swatch_grid, .{
             .kind = .hstack,
             .role = .container,
-            .test_id = "swatch.row",
+            .test_id = swatch_row_ids[row_i],
             .gap = 10.0,
         });
         for (0..6) |col_i| {

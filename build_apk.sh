@@ -10,10 +10,11 @@ NDK="${NDK:-$ANDROID_SDK/ndk/21.1.6352462}"
 BUILD_TOOLS="${BUILD_TOOLS:-$ANDROID_SDK/build-tools/35.0.0}"
 PLATFORM_JAR="${PLATFORM_JAR:-$ANDROID_SDK/platforms/android-25/android.jar}"
 
-echo "[0/5] Running unit tests (src/core_test.zig, src/glyph_atlas_test.zig, & src/events_test.zig)..."
+echo "[0/5] Running unit tests (src/core_test.zig, src/glyph_atlas_test.zig, src/events_test.zig, & src/headless_test.zig)..."
 "$ZIG" test "$ROOT_DIR/src/core_test.zig"
 "$ZIG" test "$ROOT_DIR/src/glyph_atlas_test.zig" -I"$ROOT_DIR/vendor" "$ROOT_DIR/src/stb_truetype_impl.c" -lc -lm
 "$ZIG" test "$ROOT_DIR/src/events_test.zig"
+"$ZIG" test "$ROOT_DIR/src/headless_test.zig"
 
 SYSROOT_INC="$NDK/toolchains/llvm/prebuilt/linux-x86_64/sysroot/usr/include"
 TARGET_INC="$SYSROOT_INC/aarch64-linux-android"
