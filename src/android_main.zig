@@ -5,6 +5,12 @@ const glyph_atlas = @import("glyph_atlas.zig");
 const renderer = @import("renderer.zig");
 const showcase_scene = @import("showcase_scene.zig");
 const virtual_scroll = @import("virtual_scroll.zig");
+const wearos = @import("wearos.zig");
+
+const IS_WEAR: bool = @hasDecl(@import("root"), "WEAR_MODE") and @import("root").WEAR_MODE;
+const ActiveShowcase = if (IS_WEAR) @import("wear_showcase_scene.zig").WearShowcaseApp else showcase_scene.ShowcaseApp;
+const DEFAULT_LW: f32 = if (IS_WEAR) 233.0 else 768.0;
+const DEFAULT_LH: f32 = if (IS_WEAR) 233.0 else 1024.0;
 
 const c = @cImport({
     @cDefine("BIONIC_IOCTL_NO_SIGNEDNESS_OVERLOAD", "1");
@@ -23,7 +29,7 @@ const c = @cImport({
     @cInclude("android/log.h");
 });
 
-const LOG_TAG: [*:0]const u8 = "ZigGuiSpike";
+const LOG_TAG: [*:0]const u8 = if (IS_WEAR) "ZigGuiWatch" else "ZigGuiSpike";
 const LOOPER_ID_MAIN: c_int = 1;
 const LOOPER_ID_INPUT: c_int = 2;
 const MAX_INPUT_EVENTS_PER_FRAME: usize = 32;
@@ -414,7 +420,7 @@ fn layoutAndSyncScroll(
 }
 
 fn rebuildShowcaseAndSync(
-    showcase: *showcase_scene.ShowcaseApp,
+    showcase: *ActiveShowcase,
     arena: *core.LayoutArena,
     scroller: *virtual_scroll.InertialScroller,
     router: *events.EventRouter,
@@ -432,8 +438,8 @@ fn rebuildShowcaseAndSync(
             }
         }
     }
-    const lw: f32 = if (egl_w > 0) @as(f32, @floatFromInt(egl_w)) / scale_factor else 768.0;
-    const lh: f32 = if (egl_h > 0) @as(f32, @floatFromInt(egl_h)) / scale_factor else 1024.0;
+    const lw: f32 = if (egl_w > 0) @as(f32, @floatFromInt(egl_w)) / scale_factor else DEFAULT_LW;
+    const lh: f32 = if (egl_h > 0) @as(f32, @floatFromInt(egl_h)) / scale_factor else DEFAULT_LH;
     showcase.buildScene(arena, lw, lh) catch |err| {
         logErr("showcase.buildScene failed: %s", .{@errorName(err).ptr});
         return;
@@ -452,7 +458,7 @@ fn rebuildShowcaseAndSync(
 
 fn isTouchInScrollArea(
     arena: *const core.LayoutArena,
-    showcase: *const showcase_scene.ShowcaseApp,
+    showcase: *const ActiveShowcase,
     px: f32,
     py: f32,
 ) bool {
@@ -462,7 +468,7 @@ fn isTouchInScrollArea(
             return px >= r.x and px <= r.x + r.w and py >= r.y and py <= r.y + r.h;
         }
     }
-    return py >= 108.0;
+    return if (IS_WEAR) true else (py >= 108.0);
 }
 
 const VsyncState = struct {
@@ -522,8 +528,8 @@ fn workerMain(arg: ?*anyopaque) callconv(.c) ?*anyopaque {
 
     var arena = core.LayoutArena.init(std.heap.c_allocator);
     defer arena.deinit();
-    var showcase = showcase_scene.ShowcaseApp.init();
-    showcase.buildScene(&arena, 768.0, 1024.0) catch {
+    var showcase = ActiveShowcase.init();
+    showcase.buildScene(&arena, DEFAULT_LW, DEFAULT_LH) catch {
         logErr("showcase.buildScene failed", .{});
         _ = c.pthread_mutex_lock(&state.mutex);
         state.startup_failed = true;
@@ -552,6 +558,7 @@ fn workerMain(arg: ?*anyopaque) callconv(.c) ?*anyopaque {
     var router = events.EventRouter.init();
     var mouse_buttons: MouseButtonTracker = .{};
     var scroller = virtual_scroll.InertialScroller.init(0.0);
+    var rotary = wearos.WearRotaryAdapter.init(36.0);
     var touch_scroll: TouchScrollState = .{};
     var vsync: VsyncState = .{};
     var redraw_pending = false;
@@ -1054,18 +1061,26 @@ fn workerMain(arg: ?*anyopaque) callconv(.c) ?*anyopaque {
                                         const py = c.AMotionEvent_getY(ev, 0) / scale_factor;
                                         const dx = c.AMotionEvent_getAxisValue(ev, c.AMOTION_EVENT_AXIS_HSCROLL, 0);
                                         const dy = c.AMotionEvent_getAxisValue(ev, c.AMOTION_EVENT_AXIS_VSCROLL, 0);
+                                        const axis_scroll = c.AMotionEvent_getAxisValue(ev, c.AMOTION_EVENT_AXIS_SCROLL, 0);
+                                        var wheel_dy = dy;
+                                        var scroll_delta_dp: f64 = -@as(f64, dy) * 48.0;
+                                        if (dy == 0.0 and axis_scroll != 0.0) {
+                                            const rdelta = rotary.onRotaryDelta(axis_scroll);
+                                            scroll_delta_dp = @as(f64, rdelta.scroll_dy);
+                                            wheel_dy = -rdelta.scroll_dy / 36.0;
+                                        }
                                         router.dispatch(&arena, .{ .wheel = .{
                                             .x = px,
                                             .y = py,
                                             .dx = dx,
-                                            .dy = dy,
+                                            .dy = wheel_dy,
                                         } });
                                         touch_scroll.reset();
                                         last_anim_time_s = null;
                                         anim_frames = 0;
                                         anim_dt_sum_ms = 0.0;
                                         anim_render_sum_ms = 0.0;
-                                        scroller.onWheel(-@as(f64, dy) * 48.0);
+                                        scroller.onWheel(scroll_delta_dp);
                                         applyScroll(&arena, &scroller, showcase.scroll_container, egl.width, egl.height, scale_factor);
                                         handled = 1;
                                     }
@@ -1086,8 +1101,8 @@ fn workerMain(arg: ?*anyopaque) callconv(.c) ?*anyopaque {
 
         if (quit) break;
 
-        const lw_cur: f32 = if (egl.width > 0) @as(f32, @floatFromInt(egl.width)) / scale_factor else 768.0;
-        const lh_cur: f32 = if (egl.height > 0) @as(f32, @floatFromInt(egl.height)) / scale_factor else 1024.0;
+        const lw_cur: f32 = if (egl.width > 0) @as(f32, @floatFromInt(egl.width)) / scale_factor else DEFAULT_LW;
+        const lh_cur: f32 = if (egl.height > 0) @as(f32, @floatFromInt(egl.height)) / scale_factor else DEFAULT_LH;
         var need_rebuild = false;
         var tab_changed = false;
         for (router.pollEvents()) |ui_ev| {
@@ -1120,11 +1135,13 @@ fn workerMain(arg: ?*anyopaque) callconv(.c) ?*anyopaque {
                 },
                 else => {},
             }
-            const before_tab = showcase.active_tab;
+            const before_tab = if (@hasField(ActiveShowcase, "active_tab")) showcase.active_tab else {};
             if (showcase.handleUiEvent(ui_ev, lw_cur, lh_cur)) {
                 need_rebuild = true;
-                if (showcase.active_tab != before_tab) {
-                    tab_changed = true;
+                if (@hasField(ActiveShowcase, "active_tab")) {
+                    if (showcase.active_tab != before_tab) {
+                        tab_changed = true;
+                    }
                 }
             }
         }
@@ -1199,8 +1216,8 @@ fn workerMain(arg: ?*anyopaque) callconv(.c) ?*anyopaque {
             var t1: c.struct_timespec = undefined;
             _ = c.clock_gettime(c.CLOCK_MONOTONIC, &t0);
 
-            const lw: f32 = if (egl.width > 0) @as(f32, @floatFromInt(egl.width)) / scale_factor else 768.0;
-            const lh: f32 = if (egl.height > 0) @as(f32, @floatFromInt(egl.height)) / scale_factor else 1024.0;
+            const lw: f32 = if (egl.width > 0) @as(f32, @floatFromInt(egl.width)) / scale_factor else DEFAULT_LW;
+            const lh: f32 = if (egl.height > 0) @as(f32, @floatFromInt(egl.height)) / scale_factor else DEFAULT_LH;
             if (arena.layout_dirty and egl.width > 0 and egl.height > 0) {
                 arena.layout(lw, lh);
             }

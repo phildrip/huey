@@ -95,6 +95,7 @@ pub fn build(b: *std.Build) void {
     }{
         .{ .name = "glyph_atlas_test", .path = "src/glyph_atlas_test.zig" },
         .{ .name = "showcase_scene_test", .path = "src/showcase_scene_test.zig" },
+        .{ .name = "wear_showcase_scene_test", .path = "src/wear_showcase_scene_test.zig" },
     };
 
     for (stb_test_suites) |suite| {
