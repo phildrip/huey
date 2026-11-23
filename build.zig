@@ -9,28 +9,28 @@ pub fn build(b: *std.Build) void {
         .root_source_file = b.path("src/huey.zig"),
     });
 
-    // Main desktop shell prototype executable: huey-bloxwm
-    const bloxwm_mod = b.createModule(.{
-        .root_source_file = b.path("src/bloxwm_demo.zig"),
+    // Main desktop shell prototype executable: huey-stratifi
+    const stratifi_mod = b.createModule(.{
+        .root_source_file = b.path("src/stratifi_demo.zig"),
         .target = target,
         .optimize = optimize,
     });
-    const bloxwm_exe = b.addExecutable(.{
-        .name = "huey-bloxwm",
-        .root_module = bloxwm_mod,
+    const stratifi_exe = b.addExecutable(.{
+        .name = "huey-stratifi",
+        .root_module = stratifi_mod,
     });
-    const bloxwm_install = b.addInstallArtifact(bloxwm_exe, .{});
-    b.getInstallStep().dependOn(&bloxwm_install.step);
+    const stratifi_install = b.addInstallArtifact(stratifi_exe, .{});
+    b.getInstallStep().dependOn(&stratifi_install.step);
 
-    const bloxwm_step = b.step("bloxwm-demo", "Build the huey-bloxwm desktop shell prototype");
-    bloxwm_step.dependOn(&bloxwm_install.step);
+    const stratifi_step = b.step("stratifi-demo", "Build the huey-stratifi desktop shell prototype");
+    stratifi_step.dependOn(&stratifi_install.step);
 
-    const run_cmd = b.addRunArtifact(bloxwm_exe);
+    const run_cmd = b.addRunArtifact(stratifi_exe);
     run_cmd.step.dependOn(b.getInstallStep());
     if (b.args) |args| {
         run_cmd.addArgs(args);
     }
-    const run_step = b.step("run", "Run huey-bloxwm");
+    const run_step = b.step("run", "Run huey-stratifi");
     run_step.dependOn(&run_cmd.step);
 
     // Unified test step covering all unit test suites in src/
@@ -70,7 +70,7 @@ pub fn build(b: *std.Build) void {
         .{ .name = "wayland_test", .path = "src/wayland_test.zig" },
         .{ .name = "animation_test", .path = "src/animation_test.zig" },
         .{ .name = "workbench_test", .path = "src/workbench_test.zig" },
-        .{ .name = "bloxwm_demo_test", .path = "src/bloxwm_demo_test.zig" },
+        .{ .name = "stratifi_demo_test", .path = "src/stratifi_demo_test.zig" },
     };
 
     for (pure_test_suites) |suite| {

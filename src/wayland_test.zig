@@ -37,14 +37,14 @@ test "WaylandClient binds globals, handles zwlr_layer_shell_v1 configure, wp_fra
     try std.testing.expect(client.hasLayerShell());
     try std.testing.expect(client.hasFractionalScale());
 
-    // Create a bloxwm top status bar layer-surface (height 32dp, anchored top+left+right, exclusive_zone=32)
+    // Create a stratifi top status bar layer-surface (height 32dp, anchored top+left+right, exclusive_zone=32)
     const surf = try client.createLayerSurface(.{
         .layer = .top,
         .anchor = .{ .top = true, .left = true, .right = true },
         .width = 0,
         .height = 32,
         .exclusive_zone = 32,
-        .namespace = "bloxwm-bar",
+        .namespace = "stratifi-bar",
     });
     try std.testing.expect(surf.surface_id != 0);
 
@@ -277,7 +277,7 @@ test "createLayerSurface and handleLayerConfigure write real Wayland wire frames
         .height = 36,
         .exclusive_zone = 36,
         .keyboard_interactivity = 1,
-        .namespace = "bloxwm-panel",
+        .namespace = "stratifi-panel",
     });
     try client.handleLayerConfigure(surf.layer_surface_id, 4242, 2560, 36);
 
@@ -313,7 +313,7 @@ test "createLayerSurface and handleLayerConfigure write real Wayland wire frames
             try std.testing.expectEqual(surf.surface_id, surf_id);
             try std.testing.expectEqual(@as(u32, 0), out_id);
             try std.testing.expectEqual(@as(u32, @intFromEnum(wl.Layer.top)), layer_val);
-            try std.testing.expectEqualStrings("bloxwm-panel", ns);
+            try std.testing.expectEqualStrings("stratifi-panel", ns);
             saw_get_layer_surface = true;
         } else if (dec.object_id == surf.layer_surface_id and dec.opcode == 6) {
             const ack_serial = try dec.readU32();
@@ -391,7 +391,7 @@ test "WaylandClient.readAndDispatch handles incoming compositor events over sock
     try std.testing.expect(client.hasLayerShell());
     try std.testing.expect(client.hasFractionalScale());
 
-    const surf = try client.createLayerSurface(.{ .height = 32, .namespace = "bloxwm" });
+    const surf = try client.createLayerSurface(.{ .height = 32, .namespace = "stratifi" });
 
     // Server sends seat capabilities (pointer + keyboard), preferred_scale, and layer configure
     try sendServer(peer, client.seat_id, 0, struct {

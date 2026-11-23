@@ -93,7 +93,7 @@ Two-pass atomic hot-reload (invalid JSON preserves the existing live UI untouche
 ```json
 {
   "type": "hstack",
-  "id": "bloxwm.bar",
+  "id": "stratifi.bar",
   "height": 32,
   "padding": 6,
   "gap": 8,
@@ -123,7 +123,7 @@ while (huey_poll_event(ctx, &ev)) { /* handle ev.kind / ev.test_id */ }
 
 ## 6. Verification Commands
 - Run all unit tests: `zig build test`
-- Build & run the desktop shell prototype headlessly: `zig build && ./zig-out/bin/huey-bloxwm --headless`
+- Build & run the desktop shell prototype headlessly: `zig build && ./zig-out/bin/huey-stratifi --headless`
 - Run all unit tests + Android APK build/verify (`build/huey-showcase.apk`): `./build_apk.sh`
 - Run Wear OS tests + Wear APK build/verify (`build/huey-wear.apk`): `./build_wear_apk.sh`
 - Run single module test in milliseconds: `zig test src/<module>_test.zig`

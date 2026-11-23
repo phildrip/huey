@@ -43,7 +43,7 @@ Requires **Zig 0.16.0** (plus Android SDK/NDK for mobile/watch builds).
 zig build test
 
 # Build & run the Wayland status bar / launcher prototype
-zig build bloxwm-demo && ./zig-out/bin/huey-bloxwm --headless
+zig build stratifi-demo && ./zig-out/bin/huey-stratifi --headless
 
 # Build Android tablet & Wear OS showcase APKs
 ./build_apk.sh

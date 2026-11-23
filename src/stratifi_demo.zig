@@ -25,7 +25,7 @@ pub const DEFAULT_LAUNCHER_ITEMS = [_]LauncherItem{
     .{ .name = "Bluetooth", .command = "blueman-manager", .icon = .bluetooth },
     .{ .name = "Lock Screen", .command = "swaylock", .icon = .lock },
     .{ .name = "Power & Battery", .command = "upower", .icon = .battery },
-    .{ .name = "Settings", .command = "bloxwm-settings", .icon = .settings },
+    .{ .name = "Settings", .command = "stratifi-settings", .icon = .settings },
 };
 
 const WS_TEST_IDS = [WORKSPACE_COUNT][]const u8{
@@ -95,7 +95,7 @@ fn makeOutputState(
     return out;
 }
 
-pub const BloxwmShell = struct {
+pub const StratifiShell = struct {
     allocator: std.mem.Allocator,
     arena: core.LayoutArena,
     token_table: tokens.TokenTable,
@@ -125,7 +125,7 @@ pub const BloxwmShell = struct {
     query_label_buf: [256]u8 = undefined,
     deinitialized: bool = false,
 
-    pub fn init(allocator: std.mem.Allocator) !BloxwmShell {
+    pub fn init(allocator: std.mem.Allocator) !StratifiShell {
         var arena = core.LayoutArena.init(allocator);
         errdefer arena.deinit();
 
@@ -155,7 +155,7 @@ pub const BloxwmShell = struct {
         };
     }
 
-    pub fn deinit(self: *BloxwmShell) void {
+    pub fn deinit(self: *StratifiShell) void {
         if (self.deinitialized) return;
         self.deinitialized = true;
         self.quads.deinit(self.allocator);
@@ -164,18 +164,18 @@ pub const BloxwmShell = struct {
         self.arena.deinit();
     }
 
-    pub fn primaryScale(self: *const BloxwmShell) f32 {
+    pub fn primaryScale(self: *const StratifiShell) f32 {
         if (self.windows.getWindow(self.primary_bar_win_id)) |win| {
             return win.scale_factor;
         }
         return 1.0;
     }
 
-    pub fn query(self: *const BloxwmShell) []const u8 {
+    pub fn query(self: *const StratifiShell) []const u8 {
         return self.editor.text();
     }
 
-    pub fn toggleLauncher(self: *BloxwmShell) void {
+    pub fn toggleLauncher(self: *StratifiShell) void {
         self.launcher_open = !self.launcher_open;
         if (!self.launcher_open) {
             self.focus_mgr.popScope(&self.arena);
@@ -183,11 +183,11 @@ pub const BloxwmShell = struct {
         }
     }
 
-    pub fn typeLauncherChar(self: *BloxwmShell, ch: []const u8) !void {
+    pub fn typeLauncherChar(self: *StratifiShell, ch: []const u8) !void {
         try self.editor.insert(ch);
     }
 
-    pub fn backspaceLauncher(self: *BloxwmShell) !void {
+    pub fn backspaceLauncher(self: *StratifiShell) !void {
         try self.editor.backspace();
     }
 
@@ -215,7 +215,7 @@ pub const BloxwmShell = struct {
         return tid.len;
     }
 
-    fn snapshotFocus(self: *const BloxwmShell) FocusSnapshot {
+    fn snapshotFocus(self: *const StratifiShell) FocusSnapshot {
         var snap = FocusSnapshot{};
         for (self.focus_mgr.scopes[0..self.focus_mgr.scope_len]) |s| {
             var entry = FocusSnapshot.ScopeEntry{
@@ -237,7 +237,7 @@ pub const BloxwmShell = struct {
         return snap;
     }
 
-    fn restoreFocus(self: *BloxwmShell, snap: *const FocusSnapshot) void {
+    fn restoreFocus(self: *StratifiShell, snap: *const FocusSnapshot) void {
         self.focus_mgr = focus.FocusManager.init();
         for (snap.scopes[0..snap.scope_len]) |se| {
             const new_container = self.arena.findByTestId(se.container_tid[0..se.container_len]) orelse continue;
@@ -266,7 +266,7 @@ pub const BloxwmShell = struct {
     }
 
     pub fn openBarMenu(
-        self: *BloxwmShell,
+        self: *StratifiShell,
         anchor_x: f32,
         output_w: f32,
         output_h: f32,
@@ -345,7 +345,7 @@ pub const BloxwmShell = struct {
     }
 
     pub fn buildBarScene(
-        self: *BloxwmShell,
+        self: *StratifiShell,
         output_w: f32,
         bar_h: f32,
         active_ws: u8,
@@ -708,7 +708,7 @@ pub const BloxwmShell = struct {
     }
 };
 
-fn printSummary(out: *std.Io.Writer, shell: *BloxwmShell) !void {
+fn printSummary(out: *std.Io.Writer, shell: *StratifiShell) !void {
     const bar_only_quads = try shell.buildBarScene(1920.0, 32.0, 1, false);
     const bar_icons = shell.atlas.cachedCount();
 
@@ -721,7 +721,7 @@ fn printSummary(out: *std.Io.Writer, shell: *BloxwmShell) !void {
     const menu_rect = shell.overlays.top().?.rect;
 
     try out.print(
-        "bloxwm-demo headless summary:\n" ++
+        "stratifi-demo headless summary:\n" ++
             "  bar_only_quads={d} (bar={d}, atlas_icons={d})\n" ++
             "  launcher_open=true query=\"{s}\" matched={d} launcher_quads={d} total_quads={d}\n" ++
             "  bar_menu_overlay id={d} rect=({d:.0},{d:.0},{d:.0}x{d:.0}) xdg_positioner_wire_bytes={d} overlay_quads={d} total_with_overlay={d}\n" ++
@@ -770,7 +770,7 @@ fn printSummary(out: *std.Io.Writer, shell: *BloxwmShell) !void {
 
 fn fallbackToHeadless(
     out: *std.Io.Writer,
-    shell: *BloxwmShell,
+    shell: *StratifiShell,
     reason: []const u8,
     sock_path: [*:0]const u8,
     err: anyerror,
@@ -796,7 +796,7 @@ pub fn main(init: std.process.Init) !void {
     var stdout_writer = std.Io.File.stdout().writerStreaming(init.io, &out_buf);
     const out = &stdout_writer.interface;
 
-    var shell = try BloxwmShell.init(init.gpa);
+    var shell = try StratifiShell.init(init.gpa);
     defer shell.deinit();
 
     if (headless) {
@@ -859,7 +859,7 @@ pub fn main(init: std.process.Init) !void {
             .width = 0,
             .height = 32,
             .exclusive_zone = 32,
-            .namespace = "bloxwm-bar",
+            .namespace = "stratifi-bar",
         }) catch |err| {
             try fallbackToHeadless(out, &shell, "Wayland layer surface creation failed on", sock_path, err);
             return;

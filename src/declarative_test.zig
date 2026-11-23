@@ -8,7 +8,7 @@ test "Declarative JSON loader builds SoA LayoutArena tree with token refs, bindi
     const json_src =
         \\{
         \\  "type": "vstack",
-        \\  "id": "bloxwm.bar",
+        \\  "id": "stratifi.bar",
         \\  "padding": 12,
         \\  "gap": 8,
         \\  "fill": "bg_base",

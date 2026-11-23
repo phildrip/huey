@@ -31,14 +31,14 @@ test "TextEditor word movement, selection replace, and undo/redo stack work dete
     try std.testing.expectEqualStrings("world", ed.selectedText());
 
     // Typing replaces selection cleanly
-    try ed.insert("bloxwm");
-    try std.testing.expectEqualStrings("hello zig bloxwm", ed.text());
+    try ed.insert("stratifi");
+    try std.testing.expectEqualStrings("hello zig stratifi", ed.text());
 
-    // Undo restores "hello zig world", redo restores "hello zig bloxwm"
+    // Undo restores "hello zig world", redo restores "hello zig stratifi"
     try std.testing.expect(try ed.undo());
     try std.testing.expectEqualStrings("hello zig world", ed.text());
     try std.testing.expect(try ed.redo());
-    try std.testing.expectEqualStrings("hello zig bloxwm", ed.text());
+    try std.testing.expectEqualStrings("hello zig stratifi", ed.text());
 }
 
 test "TextEditor handles ZWJ emoji sequences, skin tones, variation selectors, and regional indicators as single graphemes" {

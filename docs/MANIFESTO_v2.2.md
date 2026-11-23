@@ -1,6 +1,6 @@
 # The Huey GUI Manifesto (v2.2 — Zig-Native Edition)
 
-Every major GUI toolkit failed by either over-abstracting the hardware, drowning in state synchronization, or dragging a bloated document-object runtime into what should be an interactive rendering loop. **Huey** is a clean synthesis: a lean, hardware-accelerated, data-oriented Zig toolkit built for human ergonomics, autonomous agentic workflows, desktop window managers (`huey-bloxwm`), mobile tablets (`huey-showcase.apk`), and Wear OS (`huey-wear.apk`).
+Every major GUI toolkit failed by either over-abstracting the hardware, drowning in state synchronization, or dragging a bloated document-object runtime into what should be an interactive rendering loop. **Huey** is a clean synthesis: a lean, hardware-accelerated, data-oriented Zig toolkit built for human ergonomics, autonomous agentic workflows, desktop window managers (`huey-stratifi`), mobile tablets (`huey-showcase.apk`), and Wear OS (`huey-wear.apk`).
 
 ---
 
@@ -30,18 +30,18 @@ Every major GUI toolkit failed by either over-abstracting the hardware, drowning
 - **Hardware-Boundary Snapping & Multi-Scale Atlases:** Per-output `scale_factor` (including fractional scales `1.25x`, `1.5x`, `1.75x`, `2.0x` via `wp_fractional_scale_v1`) is applied strictly at vertex emission and glyph/icon atlas lookup.
 
 ### 2.3 Single-Pass Hardware Rendering (`sokol_gfx` + Native Event Loops)
-- **Zero Backend Maintenance Hell:** Use standalone **`sokol_gfx`** (zlib/MIT, ~150 KB, zero per-frame allocations) strictly for GPU rendering (**GLES 3.0/3.1**, OpenGL 4.1, Metal, D3D11, WebGPU) while owning thin native OS event loops (Android `NativeActivity`/`SurfaceView`, pure-Zig Wayland `xdg_shell` + `zwlr_layer_shell_v1` for `bloxwm`).
+- **Zero Backend Maintenance Hell:** Use standalone **`sokol_gfx`** (zlib/MIT, ~150 KB, zero per-frame allocations) strictly for GPU rendering (**GLES 3.0/3.1**, OpenGL 4.1, Metal, D3D11, WebGPU) while owning thin native OS event loops (Android `NativeActivity`/`SurfaceView`, pure-Zig Wayland `xdg_shell` + `zwlr_layer_shell_v1` for `stratifi`).
 - **Single-Pass Instanced UberQuads (96 bytes/quad):** One instanced draw call renders SDF rounded rects, crisp borders, analytic drop shadows, per-instance hierarchical `clip_rect` scissor clipping, and `R8` LRU glyph atlas text—composited in **IEC 61966-2-1 linear space** to eliminate gamma-crushed dark halos.
 - **Hardware-Proven on 2014 Nexus 9 (2-core Denver, 1.84 GB RAM, GLES 3.1 / no Vulkan):** `~235 KB` stripped `.so`, **344 instanced UberQuads (shapes + Roboto text) at locked 60.0 FPS VSync (`2.1–3.0 ms` CPU+submit)**, **`0%` idle CPU**.
 
 ### 2.4 2-Stage Event Model, Focus Engine & Accessibility
 - **Stage 1 (Internal Routing):** Platform input normalizes into flat `InputEvent`s → Gesture Recognizer / `TouchArbiter` (44dp touch hit-slop, 8dp drag-slop, axis-locked scroll vs. slider drag) → reverse-DFS z-order hit-test respecting `clip_children` and modal traps.
-- **Stage 2 (Zero-Callback-Hell Consumption):** Two-way `&state.field` bindings + pre-allocated per-frame `UiEvent` queue (`pollEvents()`)—working identically in Zig, C ABI, declarative JSON, `bloxwm`, and headless tests.
+- **Stage 2 (Zero-Callback-Hell Consumption):** Two-way `&state.field` bindings + pre-allocated per-frame `UiEvent` queue (`pollEvents()`)—working identically in Zig, C ABI, declarative JSON, `stratifi`, and headless tests.
 - **Focus & Accessibility:** Trapped modal/launcher focus scopes, roving tabindex, `:focus-visible`, focus restoration, and an iterative OOM-atomic `A11yTree` coupled directly to `LayoutArena` + `FocusManager`.
 
 ### 2.5 No Custom Scripting DSL: Thin C ABI + Declarative Data Schema
 - **Thin Flat C ABI (`include/huey.h`):** ~21 plain `extern fn` calls with fixed-width `uint32_t` enums (`-fshort-enums` safe) and `huey_poll_event(&ev)` for Go, Rust, Python, Lua, and C consumers.
-- **Declarative JSON Schema (`src/declarative.zig`):** Two-pass atomic hot-reload of static widget trees and Oklab design tokens (`MmapTokenBuffer` with `pread` SIGBUS safety and CRC32 validation)—ideal for `huey-bloxwm` bars, HUDs, and launchers with zero custom language maintenance.
+- **Declarative JSON Schema (`src/declarative.zig`):** Two-pass atomic hot-reload of static widget trees and Oklab design tokens (`MmapTokenBuffer` with `pread` SIGBUS safety and CRC32 validation)—ideal for `huey-stratifi` bars, HUDs, and launchers with zero custom language maintenance.
 
 ---
 

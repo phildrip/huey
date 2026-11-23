@@ -1,9 +1,9 @@
 const std = @import("std");
-const bloxwm = @import("bloxwm_demo.zig");
+const stratifi = @import("stratifi_demo.zig");
 const core = @import("core.zig");
 
-test "BloxwmShell: bar rendering produces workspace pills, active window, status chips, and atlas icons" {
-    var shell = try bloxwm.BloxwmShell.init(std.testing.allocator);
+test "StratifiShell: bar rendering produces workspace pills, active window, status chips, and atlas icons" {
+    var shell = try stratifi.StratifiShell.init(std.testing.allocator);
     defer shell.deinit();
 
     const quad_count = try shell.buildBarScene(1920.0, 32.0, 1, false);
@@ -40,8 +40,8 @@ test "BloxwmShell: bar rendering produces workspace pills, active window, status
     try std.testing.expectEqual(@as(usize, 4), textured_quads);
 }
 
-test "BloxwmShell: workspace switching updates active workspace checked state" {
-    var shell = try bloxwm.BloxwmShell.init(std.testing.allocator);
+test "StratifiShell: workspace switching updates active workspace checked state" {
+    var shell = try stratifi.StratifiShell.init(std.testing.allocator);
     defer shell.deinit();
 
     _ = try shell.buildBarScene(1280.0, 32.0, 1, false);
@@ -57,8 +57,8 @@ test "BloxwmShell: workspace switching updates active workspace checked state" {
     try std.testing.expectEqual(@as(?bool, true), shell.arena.isChecked(ws4_after));
 }
 
-test "BloxwmShell: launcher toggle, modal focus trap, search filtering, and backspace" {
-    var shell = try bloxwm.BloxwmShell.init(std.testing.allocator);
+test "StratifiShell: launcher toggle, modal focus trap, search filtering, and backspace" {
+    var shell = try stratifi.StratifiShell.init(std.testing.allocator);
     defer shell.deinit();
 
     const bar_only = try shell.buildBarScene(1920.0, 32.0, 1, false);
@@ -71,7 +71,7 @@ test "BloxwmShell: launcher toggle, modal focus trap, search filtering, and back
     const unfiltered_total = try shell.buildBarScene(1920.0, 32.0, 1, shell.launcher_open);
     try std.testing.expect(unfiltered_total > bar_only);
     try std.testing.expect(shell.last_launcher_quads > 0);
-    try std.testing.expectEqual(bloxwm.DEFAULT_LAUNCHER_ITEMS.len, shell.matched_count);
+    try std.testing.expectEqual(stratifi.DEFAULT_LAUNCHER_ITEMS.len, shell.matched_count);
 
     // Centered modal & trapped focus scope
     const modal_id = shell.arena.findByTestId("launcher-modal").?;
@@ -114,7 +114,7 @@ test "BloxwmShell: launcher toggle, modal focus trap, search filtering, and back
     try shell.backspaceLauncher();
     try std.testing.expectEqualStrings("", shell.query());
     const restored_total = try shell.buildBarScene(1920.0, 32.0, 1, shell.launcher_open);
-    try std.testing.expectEqual(bloxwm.DEFAULT_LAUNCHER_ITEMS.len, shell.matched_count);
+    try std.testing.expectEqual(stratifi.DEFAULT_LAUNCHER_ITEMS.len, shell.matched_count);
     try std.testing.expectEqual(unfiltered_total, restored_total);
 
     // Closing launcher pops modal focus trap
@@ -123,8 +123,8 @@ test "BloxwmShell: launcher toggle, modal focus trap, search filtering, and back
     try std.testing.expect(shell.focus_mgr.topTrappedContainer(&shell.arena) == null);
 }
 
-test "BloxwmShell: anchored bar dropdown menu flips near right edge, encodes xdg_positioner, and dismisses" {
-    var shell = try bloxwm.BloxwmShell.init(std.testing.allocator);
+test "StratifiShell: anchored bar dropdown menu flips near right edge, encodes xdg_positioner, and dismisses" {
+    var shell = try stratifi.StratifiShell.init(std.testing.allocator);
     defer shell.deinit();
 
     // Anchor near right edge of 1920x1080 so bottom_start flips horizontally inside viewport
@@ -153,8 +153,8 @@ test "BloxwmShell: anchored bar dropdown menu flips near right edge, encodes xdg
     try std.testing.expectEqual(@as(usize, 0), shell.overlays.activeCount());
 }
 
-test "BloxwmShell: multi-monitor mixed-DPI bars compute physical sizes and frame pacing" {
-    var shell = try bloxwm.BloxwmShell.init(std.testing.allocator);
+test "StratifiShell: multi-monitor mixed-DPI bars compute physical sizes and frame pacing" {
+    var shell = try stratifi.StratifiShell.init(std.testing.allocator);
     defer shell.deinit();
 
     try std.testing.expectEqual(@as(usize, 2), shell.windows.output_count);
@@ -168,15 +168,15 @@ test "BloxwmShell: multi-monitor mixed-DPI bars compute physical sizes and frame
     try std.testing.expectEqual(@as(u32, 6944), shell.windows.minFrameIntervalUs());
 }
 
-test "BloxwmShell: deinit is idempotent" {
-    var shell = try bloxwm.BloxwmShell.init(std.testing.allocator);
+test "StratifiShell: deinit is idempotent" {
+    var shell = try stratifi.StratifiShell.init(std.testing.allocator);
     _ = try shell.buildBarScene(1920.0, 32.0, 1, false);
     shell.deinit();
     shell.deinit();
 }
 
-test "BloxwmShell: openBarMenu validates bounds before closing existing menu and rolls back on ID overflow" {
-    var shell = try bloxwm.BloxwmShell.init(std.testing.allocator);
+test "StratifiShell: openBarMenu validates bounds before closing existing menu and rolls back on ID overflow" {
+    var shell = try stratifi.StratifiShell.init(std.testing.allocator);
     defer shell.deinit();
 
     const existing_id = try shell.openBarMenu(1700.0, 1920.0, 1080.0);
@@ -204,8 +204,8 @@ test "BloxwmShell: openBarMenu validates bounds before closing existing menu and
     try std.testing.expectEqual(@as(u32, 0), shell.bar_menu_id);
 }
 
-test "BloxwmShell: buildBarScene rejects invalid viewport and workspace inputs" {
-    var shell = try bloxwm.BloxwmShell.init(std.testing.allocator);
+test "StratifiShell: buildBarScene rejects invalid viewport and workspace inputs" {
+    var shell = try stratifi.StratifiShell.init(std.testing.allocator);
     defer shell.deinit();
 
     try std.testing.expectError(error.InvalidViewport, shell.buildBarScene(0.0, 32.0, 1, false));
@@ -221,8 +221,8 @@ test "BloxwmShell: buildBarScene rejects invalid viewport and workspace inputs" 
     try std.testing.expectError(error.InvalidWorkspace, shell.buildBarScene(1920.0, 32.0, 6, false));
 }
 
-test "BloxwmShell: launcher rejects invalid UTF-8 and preserves query buffer across reallocations" {
-    var shell = try bloxwm.BloxwmShell.init(std.testing.allocator);
+test "StratifiShell: launcher rejects invalid UTF-8 and preserves query buffer across reallocations" {
+    var shell = try stratifi.StratifiShell.init(std.testing.allocator);
     defer shell.deinit();
 
     try shell.typeLauncherChar("ter");
@@ -244,8 +244,8 @@ test "BloxwmShell: launcher rejects invalid UTF-8 and preserves query buffer acr
     try std.testing.expectEqualStrings("ter", label[0..3]);
 }
 
-test "BloxwmShell: launcher focus scope preserves and restores prior bar focus across rebuilds" {
-    var shell = try bloxwm.BloxwmShell.init(std.testing.allocator);
+test "StratifiShell: launcher focus scope preserves and restores prior bar focus across rebuilds" {
+    var shell = try stratifi.StratifiShell.init(std.testing.allocator);
     defer shell.deinit();
 
     _ = try shell.buildBarScene(1920.0, 32.0, 1, false);
