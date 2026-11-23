@@ -3,6 +3,7 @@ const core = @import("core.zig");
 const events = @import("events.zig");
 const overlay = @import("overlay.zig");
 const wearos = @import("wearos.zig");
+const hold_confirm = @import("hold_confirm.zig");
 const glyph_atlas = @import("glyph_atlas.zig");
 const animation = @import("animation.zig");
 
@@ -184,6 +185,8 @@ pub const ShowcaseApp = struct {
         true, false, true, false,
     },
     wear_ambient: bool = false,
+    frunk_hold: hold_confirm.HoldToConfirm = hold_confirm.HoldToConfirm.init(1.5),
+    frunk_open: bool = false,
     hud_bounds: bool = false,
     hud_targets: bool = false,
     hud_budget: bool = true,
@@ -203,11 +206,20 @@ pub const ShowcaseApp = struct {
     }
 
     pub fn isAnimating(self: *const ShowcaseApp) bool {
-        return self.anims.isAnimating();
+        const wear_hold_anim = self.active_tab == .widgets and !self.wear_ambient and self.frunk_hold.isAnimating();
+        return self.anims.isAnimating() or wear_hold_anim;
     }
 
     pub fn stepAnimations(self: *ShowcaseApp, dt_s: f32) bool {
-        return self.anims.step(dt_s);
+        const anim_active = self.anims.step(dt_s);
+        if (self.active_tab != .widgets or self.wear_ambient) {
+            self.frunk_hold.reset();
+            return anim_active;
+        }
+        if (self.frunk_hold.step(dt_s)) {
+            self.frunk_open = !self.frunk_open;
+        }
+        return anim_active or self.frunk_hold.isAnimating();
     }
 
     pub fn accent(self: *const ShowcaseApp) core.Color {
@@ -605,8 +617,8 @@ pub const ShowcaseApp = struct {
             .test_id = "wear_safe_square",
             .width = safe_sq.w,
             .height = safe_sq.h,
-            .padding = @min(10.0, safe_sq.w * 0.08),
-            .gap = 4.0,
+            .padding = @min(6.0, safe_sq.w * 0.05),
+            .gap = 3.0,
             .justify = .center,
             .corner_radius = 14.0,
             .border_width = 1.0,
@@ -618,27 +630,66 @@ pub const ShowcaseApp = struct {
             .role = .panel,
             .test_id = "wear_title",
             .label = "TESLA KEY",
-            .font_size = 13.0,
+            .font_size = 11.5,
             .text_color = cur_accent,
-            .height = 22.0,
+            .height = 16.0,
             .fill = core.Nord.transparent,
         });
         _ = try arena.addChild(inscribed, .{
             .kind = .card,
             .role = .panel,
             .test_id = "wear_status",
-            .label = "LOCKED",
-            .font_size = 16.0,
-            .text_color = core.Nord.snow_storm_2,
-            .height = 26.0,
+            .label = if (self.frunk_open) "FRUNK OPEN!" else "LOCKED",
+            .font_size = 13.5,
+            .text_color = if (self.frunk_open) core.Nord.aurora_green else core.Nord.snow_storm_2,
+            .height = 20.0,
             .fill = core.Nord.transparent,
         });
+
+        const frunk_h: f32 = if (safe_sq.h >= 120.0) 40.0 else 38.0;
+        const frunk_label = if (self.frunk_hold.holding)
+            "HOLD..."
+        else if (self.frunk_open)
+            "OPEN!"
+        else
+            "HOLD FRUNK";
+        const frunk_fill = if (self.frunk_hold.holding)
+            core.Nord.aurora_orange
+        else if (self.frunk_open)
+            core.Nord.aurora_green
+        else
+            core.Nord.polar_night_2;
+        const frunk_border = if (self.frunk_hold.holding)
+            core.Nord.aurora_orange
+        else if (self.frunk_open)
+            core.Nord.aurora_green
+        else
+            cur_accent;
+        const frunk_text_color = if (self.frunk_hold.holding or self.frunk_open)
+            core.Nord.polar_night_0
+        else
+            core.Nord.snow_storm_2;
+        _ = try arena.addChild(inscribed, .{
+            .kind = .card,
+            .role = .panel,
+            .test_id = "wear_frunk",
+            .label = frunk_label,
+            .font_size = 12.0,
+            .text_color = frunk_text_color,
+            .height = frunk_h,
+            .corner_radius = frunk_h * 0.5,
+            .border_width = 1.5,
+            .fill = frunk_fill,
+            .border = frunk_border,
+            .focusable = true,
+        });
+
         _ = try arena.addChild(inscribed, .{
             .kind = .bar,
             .role = .progress_bar,
             .test_id = "wear_gauge",
-            .height = 12.0,
-            .corner_radius = 6.0,
+            .height = 8.0,
+            .corner_radius = 4.0,
             .fill = core.Nord.polar_night_0,
             .accent = cur_accent,
             .slider_val = safe_slider,
@@ -875,6 +926,47 @@ pub const ShowcaseApp = struct {
         }
     }
 
+    pub fn onWearPointerDown(self: *ShowcaseApp, arena: *const core.LayoutArena, pointer_id: i32, x: f32, y: f32) bool {
+        if (self.active_tab != .widgets or self.wear_ambient) return false;
+        if (!std.math.isFinite(x) or !std.math.isFinite(y)) return false;
+        if (self.overlays.activeCount() > 0) return false;
+        const frunk_id = arena.findByTestId("wear_frunk") orelse return false;
+        if (self.scroll_container orelse arena.findByTestId("showcase.body")) |sc| {
+            if (arena.getRect(sc)) |body_rect| {
+                if (x < body_rect.x or x > body_rect.x + body_rect.w or
+                    y < body_rect.y or y > body_rect.y + body_rect.h)
+                {
+                    return false;
+                }
+            }
+        }
+        const hit_id = arena.hitTest(x, y) orelse return false;
+        if (hit_id.index == frunk_id.index and hit_id.gen == frunk_id.gen) {
+            if (!self.frunk_hold.holding) {
+                self.frunk_hold.beginHold(pointer_id);
+            }
+            return true;
+        }
+        return false;
+    }
+
+    pub fn onWearPointerMove(self: *ShowcaseApp, arena: *const core.LayoutArena, pointer_id: i32, x: f32, y: f32) void {
+        if (!self.frunk_hold.holding) return;
+        const bounds = if (arena.findByTestId("wear_frunk")) |nid|
+            (arena.getRect(nid) orelse core.Rect{})
+        else
+            core.Rect{};
+        self.frunk_hold.updatePointerMove(pointer_id, x, y, bounds);
+    }
+
+    pub fn onWearPointerUp(self: *ShowcaseApp, pointer_id: i32) void {
+        self.frunk_hold.endHold(pointer_id);
+    }
+
+    pub fn onWearPointerCancel(self: *ShowcaseApp) void {
+        self.frunk_hold.cancel();
+    }
+
     pub fn handlePointerDown(self: *ShowcaseApp, x: f32, y: f32) bool {
         if (self.overlays.activeCount() == 0) return false;
         if (!std.math.isFinite(x) or !std.math.isFinite(y)) return false;
@@ -1050,6 +1142,9 @@ pub const ShowcaseApp = struct {
         self.overlays.closeAll();
         self.popup_title = "";
         self.anims.snapSpring(animation.hashKey("popup", "scale"), 1.0);
+        if (next_tab != prev_tab) {
+            self.frunk_hold.reset();
+        }
         if (next_tab != prev_tab and std.math.isFinite(logical_w) and logical_w > 0.0) {
             const key = animation.hashKey("tabs", "indicator_x");
             _ = self.anims.animateSpring(key, approxTabIndicatorX(prev_tab, logical_w), animation.SpringConfig.snappy);
@@ -1088,6 +1183,9 @@ pub const ShowcaseApp = struct {
         }
         if (std.mem.eql(u8, test_id, "wear_ambient")) {
             self.wear_ambient = toggled_val orelse !self.wear_ambient;
+            if (self.wear_ambient) {
+                self.frunk_hold.reset();
+            }
             return true;
         }
         if (std.mem.eql(u8, test_id, "hud_bounds")) {
@@ -1378,6 +1476,47 @@ pub const ShowcaseApp = struct {
                                 .clip_rect = full_clip,
                             };
                             count += 1;
+                        }
+                    }
+                }
+            }
+        }
+
+        // 0b. Wear OS 360° Perimeter Firework Arc on circular preview bezel
+        if (self.active_tab == .widgets and !self.wear_ambient and self.frunk_hold.isAnimating() and count < hud_limit) {
+            if (arena.findByTestId("wear_bezel")) |bezel_id| {
+                if (arena.getRect(bezel_id)) |bezel_rect| {
+                    if (isPositiveFiniteRect(bezel_rect)) {
+                        const phys_bezel = core.snapRectToPhysical(bezel_rect, scale_factor);
+                        var body_clip = [4]f32{
+                            @max(full_clip[0], phys_bezel.x),
+                            @max(full_clip[1], phys_bezel.y),
+                            @min(full_clip[2], phys_bezel.x + phys_bezel.w),
+                            @min(full_clip[3], phys_bezel.y + phys_bezel.h),
+                        };
+                        if (self.scroll_container orelse arena.findByTestId("showcase.body")) |sc| {
+                            if (arena.getRect(sc)) |body_rect| {
+                                const phys_body = core.snapRectToPhysical(body_rect, scale_factor);
+                                body_clip = .{
+                                    @max(body_clip[0], phys_body.x),
+                                    @max(body_clip[1], phys_body.y),
+                                    @min(body_clip[2], phys_body.x + phys_body.w),
+                                    @min(body_clip[3], phys_body.y + phys_body.h),
+                                };
+                            }
+                        }
+                        const bezel_cx = phys_bezel.x + phys_bezel.w * 0.5;
+                        const bezel_cy = phys_bezel.y + phys_bezel.h * 0.5;
+                        const bezel_r = @min(phys_bezel.w, phys_bezel.h) * 0.5 - 4.0 * scale_factor;
+                        if (!isClipEmpty(body_clip) and bezel_r > 4.0 * scale_factor) {
+                            count += self.frunk_hold.emitPerimeterFireworkQuads(
+                                out_quads[count..hud_limit],
+                                bezel_cx,
+                                bezel_cy,
+                                bezel_r,
+                                4.0 * scale_factor,
+                                body_clip,
+                            );
                         }
                     }
                 }

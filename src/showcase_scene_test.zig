@@ -683,3 +683,147 @@ test "ShowcaseApp narrow Wear OS 200x200 and landscape 640x360 layouts + NaN san
     try std.testing.expectEqual(@as(usize, 128), app.emitPostQuads(&arena, &quads, 999, 200.0, 200.0, 1.0, null, 1));
     try std.testing.expectEqual(@as(usize, 0), app.emitPostQuads(&arena, &quads, 0, std.math.nan(f32), 200.0, 1.0, null, 1));
 }
+
+test "ShowcaseApp widgets Wear OS preview: wear_frunk 1.5s hold-to-confirm, 360 firework arc, early release & tab switch cancel" {
+    var app = showcase.ShowcaseApp.init();
+    var arena = core.LayoutArena.init(std.testing.allocator);
+    defer arena.deinit();
+    var router = events.EventRouter.init();
+
+    const w: f32 = 412.0;
+    const h: f32 = 892.0;
+    const scale: f32 = 2.0;
+    app.active_tab = .widgets;
+    try app.buildScene(&arena, w, h);
+    arena.layout(w, h);
+
+    // Verify wear_title, wear_status, wear_frunk inside wear_safe_square
+    const safe_r = arena.getRect(arena.findByTestId("wear_safe_square").?).?;
+    const title_id = arena.findByTestId("wear_title").?;
+    const status_id = arena.findByTestId("wear_status").?;
+    const frunk_id = arena.findByTestId("wear_frunk").?;
+    try std.testing.expectEqualStrings("TESLA KEY", arena.nodes.items(.label)[title_id.index]);
+    try std.testing.expectEqualStrings("LOCKED", arena.nodes.items(.label)[status_id.index]);
+    try std.testing.expectEqualStrings("HOLD FRUNK", arena.nodes.items(.label)[frunk_id.index]);
+    try std.testing.expectEqual(@as(?bool, true), arena.nodes.items(.focusable)[frunk_id.index]);
+    const frunk_r = arena.getRect(frunk_id).?;
+    try std.testing.expect(frunk_r.h >= 38.0 and frunk_r.h <= 44.0);
+    try std.testing.expect(frunk_r.y >= safe_r.y and frunk_r.y + frunk_r.h <= safe_r.y + safe_r.h + 0.01);
+    try std.testing.expect(!app.frunk_open);
+    try std.testing.expect(!app.isAnimating());
+
+    const fx = frunk_r.x + frunk_r.w * 0.5;
+    const fy = frunk_r.y + frunk_r.h * 0.5;
+
+    // 1. Early release cancels without opening frunk and settles back to !isAnimating()
+    try std.testing.expect(app.onWearPointerDown(&arena, 1, fx, fy));
+    try std.testing.expect(app.isAnimating());
+    try app.buildScene(&arena, w, h);
+    arena.layout(w, h);
+    const hold_node = arena.findByTestId("wear_frunk").?;
+    try std.testing.expectEqualStrings("HOLD...", arena.nodes.items(.label)[hold_node.index]);
+    try std.testing.expectApproxEqAbs(core.Nord.aurora_orange[0], arena.nodes.items(.fill)[hold_node.index][0], 1e-5);
+    _ = app.stepAnimations(0.5);
+    app.onWearPointerUp(1);
+    var settle_steps: usize = 0;
+    while (app.isAnimating() and settle_steps < 240) : (settle_steps += 1) {
+        _ = app.stepAnimations(1.0 / 60.0);
+    }
+    try std.testing.expect(!app.isAnimating());
+    try std.testing.expect(!app.frunk_open);
+
+    // 2. Switching tabs mid-hold cancels/resets hold_confirm cleanly
+    try std.testing.expect(app.onWearPointerDown(&arena, 2, fx, fy));
+    _ = app.stepAnimations(0.5);
+    try std.testing.expect(app.frunk_hold.holding);
+    try std.testing.expect(try tapNode(&app, &arena, &router, "tab_scroll", w, h));
+    try std.testing.expect(!app.frunk_hold.holding);
+    try std.testing.expectEqual(@as(f32, 0.0), app.frunk_hold.progress);
+    settle_steps = 0;
+    while (app.isAnimating() and settle_steps < 240) : (settle_steps += 1) {
+        _ = app.stepAnimations(1.0 / 60.0);
+    }
+    try std.testing.expect(!app.isAnimating());
+    try std.testing.expect(!app.frunk_open);
+
+    // Return to Widgets tab and settle tab indicator
+    try std.testing.expect(try tapNode(&app, &arena, &router, "tab_widgets", w, h));
+    settle_steps = 0;
+    while (app.isAnimating() and settle_steps < 240) : (settle_steps += 1) {
+        _ = app.stepAnimations(1.0 / 60.0);
+    }
+    try std.testing.expect(!app.isAnimating());
+
+    // 3. Toggling wear_ambient ON resets hold and blocks new holds
+    try app.buildScene(&arena, w, h);
+    arena.layout(w, h);
+    const frunk_r2 = arena.getRect(arena.findByTestId("wear_frunk").?).?;
+    const fx2 = frunk_r2.x + frunk_r2.w * 0.5;
+    const fy2 = frunk_r2.y + frunk_r2.h * 0.5;
+    try std.testing.expect(app.onWearPointerDown(&arena, 3, fx2, fy2));
+    _ = app.stepAnimations(0.3);
+    try std.testing.expect(try tapNode(&app, &arena, &router, "wear_ambient", w, h));
+    try std.testing.expect(app.wear_ambient);
+    try std.testing.expect(!app.frunk_hold.holding);
+    try std.testing.expect(!app.isAnimating());
+    try std.testing.expect(!app.onWearPointerDown(&arena, 4, fx2, fy2));
+    try std.testing.expect(try tapNode(&app, &arena, &router, "wear_ambient", w, h));
+    try std.testing.expect(!app.wear_ambient);
+
+    // 4. Full 1.5s hold fires frunk_open, emits firework quads clipped within showcase.body & wear_bezel, and settles
+    try app.buildScene(&arena, w, h);
+    arena.layout(w, h);
+    try std.testing.expect(app.onWearPointerDown(&arena, 5, fx2, fy2));
+    app.onWearPointerMove(&arena, 5, fx2 + 4.0, fy2);
+    try std.testing.expect(app.frunk_hold.holding);
+    var hold_steps: usize = 0;
+    while (hold_steps < 95 and !app.frunk_open) : (hold_steps += 1) {
+        _ = app.stepAnimations(1.0 / 60.0);
+    }
+    try std.testing.expect(app.frunk_open);
+    try app.buildScene(&arena, w, h);
+    arena.layout(w, h);
+    try std.testing.expectEqualStrings("FRUNK OPEN!", arena.nodes.items(.label)[arena.findByTestId("wear_status").?.index]);
+    const open_node = arena.findByTestId("wear_frunk").?;
+    try std.testing.expectEqualStrings("OPEN!", arena.nodes.items(.label)[open_node.index]);
+    try std.testing.expectApproxEqAbs(core.Nord.aurora_green[0], arena.nodes.items(.fill)[open_node.index][0], 1e-5);
+
+    const bezel_r = arena.getRect(arena.findByTestId("wear_bezel").?).?;
+    const body_r = arena.getRect(arena.findByTestId("showcase.body").?).?;
+    var quads: [2048]core.QuadInstance = undefined;
+    const base_count = arena.emitQuads(&quads, scale);
+    const total_fw = app.emitPostQuads(&arena, &quads, base_count, w, h, scale, null, 1);
+    try std.testing.expect(total_fw > base_count + 10);
+
+    var fw_count: usize = 0;
+    for (quads[base_count..total_fw]) |q| {
+        if (@abs(q.params[3] - wearos.AMBIENT_FG_SDF_MODE) < 1e-5) {
+            fw_count += 1;
+            const qcx = q.pos_size[0] + q.pos_size[2] * 0.5;
+            const qcy = q.pos_size[1] + q.pos_size[3] * 0.5;
+            try std.testing.expect(qcx >= bezel_r.x * scale and qcx <= (bezel_r.x + bezel_r.w) * scale);
+            try std.testing.expect(qcy >= bezel_r.y * scale and qcy <= (bezel_r.y + bezel_r.h) * scale);
+            try std.testing.expect(q.clip_rect[1] >= body_r.y * scale - 1.0);
+            try std.testing.expect(q.clip_rect[3] <= (body_r.y + body_r.h) * scale + 1.0);
+        }
+    }
+    try std.testing.expect(fw_count > 10);
+
+    app.onWearPointerUp(5);
+    settle_steps = 0;
+    while (app.isAnimating() and settle_steps < 240) : (settle_steps += 1) {
+        _ = app.stepAnimations(1.0 / 60.0);
+    }
+    try std.testing.expect(!app.isAnimating());
+
+    // 5. Slipping outside button bounds cancels hold cleanly
+    try std.testing.expect(app.onWearPointerDown(&arena, 6, fx2, fy2));
+    app.onWearPointerMove(&arena, 6, fx2 + 200.0, fy2 + 200.0);
+    try std.testing.expect(!app.frunk_hold.holding);
+    app.onWearPointerCancel();
+    settle_steps = 0;
+    while (app.isAnimating() and settle_steps < 240) : (settle_steps += 1) {
+        _ = app.stepAnimations(1.0 / 60.0);
+    }
+    try std.testing.expect(!app.isAnimating());
+}
