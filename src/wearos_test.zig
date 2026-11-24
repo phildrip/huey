@@ -823,56 +823,90 @@ test "BubbleGrid: monotonic fisheye past sqrt(5), smooth release ripple_orb, hel
     try std.testing.expectApproxEqAbs(@as(f32, -40.0), det_grid.pan_x, 0.02);
 }
 
-test "BubbleGrid dramatic spherical lens, center-bloom scaling, far_fade boundary, and focusedOrb" {
+test "BubbleGrid atan-integral honeycomb lens: exact values, d(r_proj)/dr == scale, monotonicity, far_fade, and focusedOrb" {
     const cx: f32 = 116.5;
     const cy: f32 = 116.5;
-    const lens: f32 = 116.5;
-    var grid = wearos.BubbleGrid.init(84.0, lens, 64.0);
+    const lens: f32 = 100.0;
+    var grid = wearos.BubbleGrid.init(84.0, lens, 76.0);
 
-    // 1. Center-bloom / edge-shrink scaling & 1.15 radial lens compression
-    const lens_orbs = [_]wearos.BubbleOrb{
-        .{ .home_x = 0.0, .home_y = 0.0, .base_radius = 28.0 },
-        .{ .home_x = 0.65 * lens, .home_y = 0.0, .base_radius = 28.0 },
-        .{ .home_x = 0.95 * lens, .home_y = 0.0, .base_radius = 28.0 },
+    // 1. Exact lens scale values & monotonic decrease (scale >= 0.24)
+    const sample_u = [_]f32{ 0.0, 0.25, 0.50, 0.76, 1.00, 1.25, 1.55, 2.05, 2.50, 4.00 };
+    var sample_orbs: [sample_u.len]wearos.BubbleOrb = undefined;
+    for (sample_u, 0..) |u, idx| {
+        sample_orbs[idx] = .{ .home_x = u * lens, .home_y = 0.0, .base_radius = 33.5 };
+    }
+
+    var prev_x: f32 = cx - 1.0;
+    var prev_scale: f32 = 2.0;
+    for (sample_u, 0..) |u, idx| {
+        const p = grid.project(idx, &sample_orbs, cx, cy);
+        try std.testing.expect(p.x > prev_x);
+        try std.testing.expect(p.scale >= 0.24);
+        try std.testing.expect(p.scale < prev_scale);
+        if (u >= 2.05) {
+            try std.testing.expect(!p.visible);
+            try std.testing.expectEqual(@as(f32, 0.0), p.alpha);
+        } else {
+            try std.testing.expect(p.visible);
+            try std.testing.expect(p.alpha > 0.02);
+        }
+        prev_x = p.x;
+        prev_scale = p.scale;
+    }
+
+    const p_center = grid.project(0, &sample_orbs, cx, cy); // u = 0.0
+    const p_076 = grid.project(3, &sample_orbs, cx, cy); // u = 0.76
+    const p_125 = grid.project(5, &sample_orbs, cx, cy); // u = 1.25
+    const p_155 = grid.project(6, &sample_orbs, cx, cy); // u = 1.55
+    try std.testing.expectApproxEqAbs(@as(f32, 1.0), p_center.scale, 0.0005);
+    try std.testing.expectApproxEqAbs(@as(f32, 0.629), p_076.scale, 0.001);
+    try std.testing.expectApproxEqAbs(@as(f32, 0.452), p_125.scale, 0.001);
+    try std.testing.expectApproxEqAbs(@as(f32, 0.50), p_155.alpha, 0.001);
+
+    // Closed-form atan-integral radial position check at u = 0.76
+    const k: f64 = 1.65;
+    const sqrt_k: f64 = @sqrt(k);
+    const u_076: f64 = 0.76;
+    const expected_r_076: f32 = @floatCast(@as(f64, lens) * (0.24 * u_076 + (1.0 - 0.24) * std.math.atan(sqrt_k * u_076) / sqrt_k));
+    try std.testing.expectApproxEqAbs(cx + expected_r_076, p_076.x, 0.01);
+
+    // 2. Numerical derivative d(r_proj)/dr == scale(u) around u = 0.76 and u = 1.25
+    const eps: f32 = 0.05;
+    const deriv_orbs = [_]wearos.BubbleOrb{
+        .{ .home_x = 0.76 * lens - eps, .home_y = 0.0, .base_radius = 28.0 },
+        .{ .home_x = 0.76 * lens + eps, .home_y = 0.0, .base_radius = 28.0 },
+        .{ .home_x = 1.25 * lens - eps, .home_y = 0.0, .base_radius = 28.0 },
+        .{ .home_x = 1.25 * lens + eps, .home_y = 0.0, .base_radius = 28.0 },
     };
-    const p_center = grid.project(0, &lens_orbs, cx, cy);
-    const p_mid = grid.project(1, &lens_orbs, cx, cy);
-    const p_edge = grid.project(2, &lens_orbs, cx, cy);
+    const d_076 = (grid.project(1, &deriv_orbs, cx, cy).x - grid.project(0, &deriv_orbs, cx, cy).x) / (2.0 * eps);
+    const d_125 = (grid.project(3, &deriv_orbs, cx, cy).x - grid.project(2, &deriv_orbs, cx, cy).x) / (2.0 * eps);
+    try std.testing.expectApproxEqAbs(p_076.scale, d_076, 0.002);
+    try std.testing.expectApproxEqAbs(p_125.scale, d_125, 0.002);
 
-    try std.testing.expect(p_center.visible and p_mid.visible and p_edge.visible);
-    try std.testing.expect(p_center.scale >= 0.98);
-    try std.testing.expect(p_mid.scale < 0.65);
-    try std.testing.expect(p_edge.scale <= 0.40);
-    try std.testing.expect(p_center.radius / p_edge.radius >= 2.2);
+    // 3. Dense honeycomb zero-overlap check (orb_r = 33.5, spacing = 76.0, lens = 100.0) across rest (0,0) and all 7 hex slots
+    const spacing: f32 = 76.0;
+    const orb_r: f32 = 33.5;
+    var hex_orbs: [7]wearos.BubbleOrb = undefined;
+    for (0..7) |slot| {
+        const off = wearos.BubbleGrid.hexOffset(@intCast(slot), spacing);
+        hex_orbs[slot] = .{ .home_x = off.x, .home_y = off.y, .base_radius = orb_r };
+    }
+    for (0..7) |focus_slot| {
+        grid.pan_x = -hex_orbs[focus_slot].home_x;
+        grid.pan_y = -hex_orbs[focus_slot].home_y;
+        for (0..7) |i| {
+            const pi = grid.project(i, &hex_orbs, cx, cy);
+            try std.testing.expect(pi.visible);
+            for ((i + 1)..7) |j| {
+                const pj = grid.project(j, &hex_orbs, cx, cy);
+                const dist = std.math.hypot(pi.x - pj.x, pi.y - pj.y);
+                try std.testing.expect(dist >= pi.radius + pj.radius);
+            }
+        }
+    }
+    grid.recenter();
 
-    const expected_mid_x: f32 = cx + @as(f32, @floatCast((0.65 * @as(f64, lens)) / @sqrt(1.0 + 1.15 * 0.65 * 0.65)));
-    try std.testing.expectApproxEqAbs(expected_mid_x, p_mid.x, 0.05);
-
-    // 2. Monotonicity through u > 2.236 and far_fade reaching 0.0 at u >= 1.85
-    const far_orbs = [_]wearos.BubbleOrb{
-        .{ .home_x = 1.60 * lens, .home_y = 0.0, .base_radius = 28.0 },
-        .{ .home_x = 1.85 * lens, .home_y = 0.0, .base_radius = 28.0 },
-        .{ .home_x = 2.30 * lens, .home_y = 0.0, .base_radius = 28.0 },
-        .{ .home_x = 4.00 * lens, .home_y = 0.0, .base_radius = 28.0 },
-    };
-    const p_160 = grid.project(0, &far_orbs, cx, cy);
-    const p_185 = grid.project(1, &far_orbs, cx, cy);
-    const p_230 = grid.project(2, &far_orbs, cx, cy);
-    const p_400 = grid.project(3, &far_orbs, cx, cy);
-
-    try std.testing.expect(p_160.visible);
-    try std.testing.expect(p_160.alpha > 0.02);
-    try std.testing.expect(!p_185.visible);
-    try std.testing.expectEqual(@as(f32, 0.0), p_185.alpha);
-    try std.testing.expect(!p_230.visible);
-    try std.testing.expectEqual(@as(f32, 0.0), p_230.alpha);
-    try std.testing.expect(!p_400.visible);
-    try std.testing.expectEqual(@as(f32, 0.0), p_400.alpha);
-    try std.testing.expect(p_185.x > p_160.x);
-    try std.testing.expect(p_230.x > p_185.x);
-    try std.testing.expect(p_400.x > p_230.x);
-
-    // 3. focusedOrb() tracking, invalid/empty/NaN guards, and base_radius <= 0 skipping
+    // 4. focusedOrb() tracking, invalid/empty/NaN guards, and base_radius <= 0 skipping
     const empty_orbs = [_]wearos.BubbleOrb{};
     try std.testing.expectEqual(@as(?usize, null), grid.focusedOrb(&empty_orbs));
 

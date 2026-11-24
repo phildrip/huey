@@ -1433,8 +1433,12 @@ pub const BubbleGrid = struct {
         const r_f64 = std.math.hypot(@as(f64, wx), @as(f64, wy));
         const safe_lens_f64: f64 = @as(f64, safe_lens);
         const u_f64 = r_f64 / safe_lens_f64;
-        // Strictly monotonic radial compression for all u >= 0
-        const r_proj_f64 = r_f64 / @sqrt(1.0 + 1.15 * u_f64 * u_f64);
+        // Closed-form integral-matched honeycomb lens: d(r_proj)/dr == scale(u) for all u >= 0
+        const LENS_S_MIN: f64 = 0.24;
+        const LENS_K: f64 = 1.65;
+        const LENS_SQRT_K: f64 = @sqrt(LENS_K);
+        const scale_f64 = LENS_S_MIN + (1.0 - LENS_S_MIN) / (1.0 + LENS_K * u_f64 * u_f64);
+        const r_proj_f64 = safe_lens_f64 * (LENS_S_MIN * u_f64 + (1.0 - LENS_S_MIN) * std.math.atan(LENS_SQRT_K * u_f64) / LENS_SQRT_K);
         if (!std.math.isFinite(r_proj_f64)) return invisible;
 
         const proj_x: f32 = if (r_f64 > 1e-4) @floatCast(@as(f64, cx) + @as(f64, wx) * (r_proj_f64 / r_f64)) else cx;
@@ -1442,13 +1446,13 @@ pub const BubbleGrid = struct {
         if (!std.math.isFinite(proj_x) or !std.math.isFinite(proj_y)) return invisible;
 
         const u: f32 = @floatCast(@min(u_f64, 1e6));
-        var scale = bubbleLerp(1.0, 0.34, bubbleSmoothstep(0.06, 0.98, u));
+        var scale: f32 = std.math.clamp(@as(f32, @floatCast(scale_f64)), @as(f32, @floatCast(LENS_S_MIN)), 1.0);
         if (self.ripple_orb == orb_idx) {
             scale *= (1.0 - 0.10 * safe_press_t);
         }
         const radius = orb.base_radius * scale;
-        const inner_alpha = bubbleLerp(1.0, 0.48, bubbleSmoothstep(0.60, 1.15, u));
-        const far_fade = 1.0 - bubbleSmoothstep(1.35, 1.85, u);
+        const inner_alpha = bubbleLerp(1.0, 0.50, bubbleSmoothstep(0.70, 1.35, u));
+        const far_fade = 1.0 - bubbleSmoothstep(1.55, 2.05, u);
         const alpha = std.math.clamp(inner_alpha * far_fade, 0.0, 1.0);
         const visible = alpha > 0.02 and radius > 0.5;
 
