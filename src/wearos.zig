@@ -1231,9 +1231,12 @@ pub const BubbleGrid = struct {
             o.base_radius > 0.0;
     }
 
-    fn nearestDetent(self: *const BubbleGrid, orbs: []const BubbleOrb, max_r: f32) RingPoint {
+    /// Returns the index of the valid orb closest to `(0, 0)` under the current pan,
+    /// or `null` if pan is non-finite or no valid orb exists within `MAX_ORBS`.
+    pub fn focusedOrb(self: *const BubbleGrid, orbs: []const BubbleOrb) ?usize {
+        if (!std.math.isFinite(self.pan_x) or !std.math.isFinite(self.pan_y)) return null;
         const count = @min(orbs.len, MAX_ORBS);
-        if (count == 0) return .{ .x = 0.0, .y = 0.0 };
+        if (count == 0) return null;
 
         var best_idx: ?usize = null;
         var best_dist: f64 = std.math.inf(f64);
@@ -1246,15 +1249,17 @@ pub const BubbleGrid = struct {
             {
                 continue;
             }
-            const wx: f64 = @as(f64, o.home_x) + px_f64;
-            const wy: f64 = @as(f64, o.home_y) + py_f64;
-            const dist = std.math.hypot(wx, wy);
-            if (std.math.isFinite(dist) and dist < best_dist) {
-                best_dist = dist;
+            const d = std.math.hypot(@as(f64, o.home_x) + px_f64, @as(f64, o.home_y) + py_f64);
+            if (std.math.isFinite(d) and d < best_dist) {
+                best_dist = d;
                 best_idx = i;
             }
         }
-        const idx = best_idx orelse return .{ .x = 0.0, .y = 0.0 };
+        return best_idx;
+    }
+
+    fn nearestDetent(self: *const BubbleGrid, orbs: []const BubbleOrb, max_r: f32) RingPoint {
+        const idx = self.focusedOrb(orbs) orelse return .{ .x = 0.0, .y = 0.0 };
         var tx: f64 = -@as(f64, orbs[idx].home_x);
         var ty: f64 = -@as(f64, orbs[idx].home_y);
         if (!std.math.isFinite(tx) or !std.math.isFinite(ty)) {
@@ -1428,8 +1433,8 @@ pub const BubbleGrid = struct {
         const r_f64 = std.math.hypot(@as(f64, wx), @as(f64, wy));
         const safe_lens_f64: f64 = @as(f64, safe_lens);
         const u_f64 = r_f64 / safe_lens_f64;
-        // Strictly monotonic radial compression for all u >= 0 (matches 1/(1 + 0.20*u^2) at small u)
-        const r_proj_f64 = r_f64 / @sqrt(1.0 + 0.40 * u_f64 * u_f64);
+        // Strictly monotonic radial compression for all u >= 0
+        const r_proj_f64 = r_f64 / @sqrt(1.0 + 1.15 * u_f64 * u_f64);
         if (!std.math.isFinite(r_proj_f64)) return invisible;
 
         const proj_x: f32 = if (r_f64 > 1e-4) @floatCast(@as(f64, cx) + @as(f64, wx) * (r_proj_f64 / r_f64)) else cx;
@@ -1437,13 +1442,13 @@ pub const BubbleGrid = struct {
         if (!std.math.isFinite(proj_x) or !std.math.isFinite(proj_y)) return invisible;
 
         const u: f32 = @floatCast(@min(u_f64, 1e6));
-        var scale = bubbleLerp(1.0, 0.56, bubbleSmoothstep(0.18, 1.05, u));
+        var scale = bubbleLerp(1.0, 0.34, bubbleSmoothstep(0.06, 0.98, u));
         if (self.ripple_orb == orb_idx) {
             scale *= (1.0 - 0.10 * safe_press_t);
         }
         const radius = orb.base_radius * scale;
-        const inner_alpha = bubbleLerp(1.0, 0.42, bubbleSmoothstep(0.55, 1.18, u));
-        const far_fade = 1.0 - bubbleSmoothstep(1.6, 2.2, u);
+        const inner_alpha = bubbleLerp(1.0, 0.48, bubbleSmoothstep(0.60, 1.15, u));
+        const far_fade = 1.0 - bubbleSmoothstep(1.35, 1.85, u);
         const alpha = std.math.clamp(inner_alpha * far_fade, 0.0, 1.0);
         const visible = alpha > 0.02 and radius > 0.5;
 

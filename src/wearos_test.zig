@@ -822,3 +822,89 @@ test "BubbleGrid: monotonic fisheye past sqrt(5), smooth release ripple_orb, hel
     try std.testing.expect(!det_grid.isAnimating());
     try std.testing.expectApproxEqAbs(@as(f32, -40.0), det_grid.pan_x, 0.02);
 }
+
+test "BubbleGrid dramatic spherical lens, center-bloom scaling, far_fade boundary, and focusedOrb" {
+    const cx: f32 = 116.5;
+    const cy: f32 = 116.5;
+    const lens: f32 = 116.5;
+    var grid = wearos.BubbleGrid.init(84.0, lens, 64.0);
+
+    // 1. Center-bloom / edge-shrink scaling & 1.15 radial lens compression
+    const lens_orbs = [_]wearos.BubbleOrb{
+        .{ .home_x = 0.0, .home_y = 0.0, .base_radius = 28.0 },
+        .{ .home_x = 0.65 * lens, .home_y = 0.0, .base_radius = 28.0 },
+        .{ .home_x = 0.95 * lens, .home_y = 0.0, .base_radius = 28.0 },
+    };
+    const p_center = grid.project(0, &lens_orbs, cx, cy);
+    const p_mid = grid.project(1, &lens_orbs, cx, cy);
+    const p_edge = grid.project(2, &lens_orbs, cx, cy);
+
+    try std.testing.expect(p_center.visible and p_mid.visible and p_edge.visible);
+    try std.testing.expect(p_center.scale >= 0.98);
+    try std.testing.expect(p_mid.scale < 0.65);
+    try std.testing.expect(p_edge.scale <= 0.40);
+    try std.testing.expect(p_center.radius / p_edge.radius >= 2.2);
+
+    const expected_mid_x: f32 = cx + @as(f32, @floatCast((0.65 * @as(f64, lens)) / @sqrt(1.0 + 1.15 * 0.65 * 0.65)));
+    try std.testing.expectApproxEqAbs(expected_mid_x, p_mid.x, 0.05);
+
+    // 2. Monotonicity through u > 2.236 and far_fade reaching 0.0 at u >= 1.85
+    const far_orbs = [_]wearos.BubbleOrb{
+        .{ .home_x = 1.60 * lens, .home_y = 0.0, .base_radius = 28.0 },
+        .{ .home_x = 1.85 * lens, .home_y = 0.0, .base_radius = 28.0 },
+        .{ .home_x = 2.30 * lens, .home_y = 0.0, .base_radius = 28.0 },
+        .{ .home_x = 4.00 * lens, .home_y = 0.0, .base_radius = 28.0 },
+    };
+    const p_160 = grid.project(0, &far_orbs, cx, cy);
+    const p_185 = grid.project(1, &far_orbs, cx, cy);
+    const p_230 = grid.project(2, &far_orbs, cx, cy);
+    const p_400 = grid.project(3, &far_orbs, cx, cy);
+
+    try std.testing.expect(p_160.visible);
+    try std.testing.expect(p_160.alpha > 0.02);
+    try std.testing.expect(!p_185.visible);
+    try std.testing.expectEqual(@as(f32, 0.0), p_185.alpha);
+    try std.testing.expect(!p_230.visible);
+    try std.testing.expectEqual(@as(f32, 0.0), p_230.alpha);
+    try std.testing.expect(!p_400.visible);
+    try std.testing.expectEqual(@as(f32, 0.0), p_400.alpha);
+    try std.testing.expect(p_185.x > p_160.x);
+    try std.testing.expect(p_230.x > p_185.x);
+    try std.testing.expect(p_400.x > p_230.x);
+
+    // 3. focusedOrb() tracking, invalid/empty/NaN guards, and base_radius <= 0 skipping
+    const empty_orbs = [_]wearos.BubbleOrb{};
+    try std.testing.expectEqual(@as(?usize, null), grid.focusedOrb(&empty_orbs));
+
+    const nan = std.math.nan(f32);
+    const inf = std.math.inf(f32);
+    const invalid_orbs = [_]wearos.BubbleOrb{
+        .{ .home_x = 0.0, .home_y = 0.0, .base_radius = 0.0 },
+        .{ .home_x = 10.0, .home_y = 0.0, .base_radius = -5.0 },
+        .{ .home_x = nan, .home_y = 0.0, .base_radius = 24.0 },
+        .{ .home_x = 0.0, .home_y = inf, .base_radius = 24.0 },
+    };
+    try std.testing.expectEqual(@as(?usize, null), grid.focusedOrb(&invalid_orbs));
+
+    const focus_orbs = [_]wearos.BubbleOrb{
+        .{ .home_x = 0.0, .home_y = 0.0, .base_radius = 0.0 }, // invalid, skipped even at pan = (0, 0)
+        .{ .home_x = 20.0, .home_y = 0.0, .base_radius = 24.0 },
+        .{ .home_x = -50.0, .home_y = 0.0, .base_radius = 24.0 },
+        .{ .home_x = 0.0, .home_y = 60.0, .base_radius = 24.0 },
+    };
+    try std.testing.expectEqual(@as(?usize, 1), grid.focusedOrb(&focus_orbs));
+
+    grid.pan_x = 45.0; // orb 2 is at (-50 + 45, 0) -> dist 5 (closest)
+    grid.pan_y = 0.0;
+    try std.testing.expectEqual(@as(?usize, 2), grid.focusedOrb(&focus_orbs));
+
+    grid.pan_x = 0.0;
+    grid.pan_y = -58.0; // orb 3 is at (0, 60 - 58) -> dist 2 (closest)
+    try std.testing.expectEqual(@as(?usize, 3), grid.focusedOrb(&focus_orbs));
+
+    grid.pan_x = nan;
+    try std.testing.expectEqual(@as(?usize, null), grid.focusedOrb(&focus_orbs));
+    grid.pan_x = 0.0;
+    grid.pan_y = inf;
+    try std.testing.expectEqual(@as(?usize, null), grid.focusedOrb(&focus_orbs));
+}
