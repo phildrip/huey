@@ -431,3 +431,273 @@ test "HeadlessSession.runDiagnostics skips overflow and occluded_target false po
         try std.testing.expect(d.code != .occluded_target);
     }
 }
+
+test "Headless rasterizer: QUAD_MODE_ARC covers start/mid/end, full 2*pi ring, 0-sweep empty, colored glow, and NaN/zero-thickness safety" {
+    const black = core.Color{ 0.0, 0.0, 0.0, 1.0 };
+    const no_round_clip = [4]f32{ 0.0, 0.0, 0.0, 0.0 };
+    const w: usize = 120;
+    const h: usize = 120;
+    const cx: usize = 60;
+    const cy: usize = 60;
+
+    // 1. Top-right quarter arc: start = -pi/2 (12 o'clock), sweep = pi/2 (to 3 o'clock), r = 40, thickness = 8
+    const arc_col = core.Color{ 0.2, 0.8, 1.0, 1.0 };
+    const q_quarter = [_]core.QuadInstance{.{
+        .pos_size = .{ 16.0, 16.0, 88.0, 88.0 }, // center (60,60), half=44, auto r = 44 - 4 = 40
+        .uv_rect = .{ -std.math.pi * 0.5, std.math.pi * 0.5, 0.0, 0.0 },
+        .color = arc_col,
+        .border_color = core.Nord.transparent,
+        .params = .{ 0.0, 8.0, 0.0, core.QUAD_MODE_ARC },
+    }};
+    const img_q = try headless.renderQuadsToRgba(std.testing.allocator, w, h, &q_quarter, black, no_round_clip, null);
+    defer std.testing.allocator.free(img_q);
+
+    // Start (12 o'clock: 60, 20), Mid (1:30: 60 + 28, 60 - 28), End (3 o'clock: 100, 60) should be lit
+    const px_start = (20 * w + 60) * 4;
+    const px_mid = (32 * w + 88) * 4;
+    const px_end = (60 * w + 100) * 4;
+    try std.testing.expect(img_q[px_start + 2] > 200);
+    try std.testing.expect(img_q[px_mid + 2] > 200);
+    try std.testing.expect(img_q[px_end + 2] > 200);
+
+    // Opposite angles (9 o'clock: 20, 60; 6 o'clock: 60, 100) and center (60, 60) must remain black
+    const px_9 = (60 * w + 20) * 4;
+    const px_6 = (100 * w + 60) * 4;
+    const px_ctr = (cy * w + cx) * 4;
+    try std.testing.expectEqual(@as(u8, 0), img_q[px_9 + 2]);
+    try std.testing.expectEqual(@as(u8, 0), img_q[px_6 + 2]);
+    try std.testing.expectEqual(@as(u8, 0), img_q[px_ctr + 2]);
+
+    // 2. Full 2*pi closed ring lights all 4 cardinal points (12, 3, 6, 9) and leaves center empty
+    const q_ring = [_]core.QuadInstance{.{
+        .pos_size = .{ 16.0, 16.0, 88.0, 88.0 },
+        .uv_rect = .{ -std.math.pi * 0.5, std.math.tau, 0.0, 0.0 },
+        .color = arc_col,
+        .border_color = core.Nord.transparent,
+        .params = .{ 40.0, 6.0, 0.0, core.QUAD_MODE_ARC },
+    }};
+    const img_ring = try headless.renderQuadsToRgba(std.testing.allocator, w, h, &q_ring, black, no_round_clip, null);
+    defer std.testing.allocator.free(img_ring);
+    try std.testing.expect(img_ring[(20 * w + 60) * 4 + 2] > 200);
+    try std.testing.expect(img_ring[(60 * w + 100) * 4 + 2] > 200);
+    try std.testing.expect(img_ring[(100 * w + 60) * 4 + 2] > 200);
+    try std.testing.expect(img_ring[(60 * w + 20) * 4 + 2] > 200);
+    try std.testing.expectEqual(@as(u8, 0), img_ring[px_ctr + 2]);
+
+    // 3. Zero sweep, zero thickness, and NaN inputs render empty cleanly
+    const q_empty = [_]core.QuadInstance{
+        .{
+            .pos_size = .{ 16.0, 16.0, 88.0, 88.0 },
+            .uv_rect = .{ 0.0, 0.0, 0.0, 0.0 },
+            .color = arc_col,
+            .border_color = core.Nord.transparent,
+            .params = .{ 40.0, 6.0, 0.0, core.QUAD_MODE_ARC },
+        },
+        .{
+            .pos_size = .{ 16.0, 16.0, 88.0, 88.0 },
+            .uv_rect = .{ 0.0, std.math.pi, 0.0, 0.0 },
+            .color = arc_col,
+            .border_color = core.Nord.transparent,
+            .params = .{ 40.0, 0.0, 0.0, core.QUAD_MODE_ARC },
+        },
+        .{
+            .pos_size = .{ 16.0, 16.0, 88.0, 88.0 },
+            .uv_rect = .{ std.math.nan(f32), std.math.pi, 0.0, 0.0 },
+            .color = arc_col,
+            .border_color = core.Nord.transparent,
+            .params = .{ 40.0, 6.0, 0.0, core.QUAD_MODE_ARC },
+        },
+    };
+    const img_empty = try headless.renderQuadsToRgba(std.testing.allocator, w, h, &q_empty, black, no_round_clip, null);
+    defer std.testing.allocator.free(img_empty);
+    for (0..w * h) |i| {
+        try std.testing.expectEqual(@as(u8, 0), img_empty[i * 4 + 2]);
+    }
+
+    // 4. Colored outer glow halo (blur = 12.0) radiates outside stroke using arc color
+    const q_glow = [_]core.QuadInstance{.{
+        .pos_size = .{ 20.0, 20.0, 80.0, 80.0 }, // half=40, r = 40 - 3 = 37
+        .uv_rect = .{ 0.0, std.math.tau, 0.0, 0.0 },
+        .color = .{ 0.0, 0.5, 1.0, 1.0 },
+        .border_color = core.Nord.transparent,
+        .params = .{ 34.0, 6.0, 12.0, core.QUAD_MODE_ARC },
+    }};
+    const img_glow = try headless.renderQuadsToRgba(std.testing.allocator, w, h, &q_glow, black, no_round_clip, null);
+    defer std.testing.allocator.free(img_glow);
+    // Outer edge of stroke is at 60 + 37 = 97; 3px outside = x=100, y=60 must have blue > green > red == 0
+    const px_halo = (60 * w + 100) * 4;
+    try std.testing.expectEqual(@as(u8, 0), img_glow[px_halo + 0]);
+    try std.testing.expect(img_glow[px_halo + 1] > 10);
+    try std.testing.expect(img_glow[px_halo + 2] > img_glow[px_halo + 1]);
+}
+
+test "Headless rasterizer: QUAD_MODE_SURFACE vertical linear gradient, top specular rim, and colored glow halo" {
+    const black = core.Color{ 0.0, 0.0, 0.0, 1.0 };
+    const no_round_clip = [4]f32{ 0.0, 0.0, 0.0, 0.0 };
+    const w: usize = 100;
+    const h: usize = 100;
+
+    // 1. Vertical gradient: top pure white (1,1,1,1) -> bottom black (0,0,0), no specular, no border
+    const q_grad = [_]core.QuadInstance{.{
+        .pos_size = .{ 20.0, 20.0, 60.0, 60.0 },
+        .uv_rect = .{ 0.0, 0.0, 0.0, 0.0 },
+        .color = .{ 1.0, 1.0, 1.0, 1.0 },
+        .border_color = core.Nord.transparent,
+        .params = .{ 0.0, 0.0, 0.0, core.QUAD_MODE_SURFACE },
+    }};
+    const img_grad = try headless.renderQuadsToRgba(std.testing.allocator, w, h, &q_grad, black, no_round_clip, null);
+    defer std.testing.allocator.free(img_grad);
+    const px_top = (22 * w + 50) * 4;
+    const px_mid = (50 * w + 50) * 4;
+    const px_bot = (77 * w + 50) * 4;
+    try std.testing.expect(img_grad[px_top + 0] > 235);
+    // Linear-space midpoint of 1.0 and 0.0 is 0.5 linear -> ~188 sRGB (NOT 128!)
+    try std.testing.expect(img_grad[px_mid + 0] >= 180 and img_grad[px_mid + 0] <= 196);
+    try std.testing.expect(img_grad[px_bot + 0] < 90);
+
+    // 2. Top specular rim + colored border glow: uniform dark fill (#161A22), top_specular_alpha = 0.5, Frost border + glow
+    const dark_fill = core.Color{ 0.086, 0.102, 0.133, 1.0 };
+    const q_spec = [_]core.QuadInstance{.{
+        .pos_size = .{ 20.0, 20.0, 60.0, 60.0 },
+        .uv_rect = .{ dark_fill[0], dark_fill[1], dark_fill[2], 0.5 },
+        .color = dark_fill,
+        .border_color = core.Nord.frost_1,
+        .params = .{ 10.0, 2.0, 10.0, core.QUAD_MODE_SURFACE },
+    }};
+    const img_spec = try headless.renderQuadsToRgba(std.testing.allocator, w, h, &q_spec, black, no_round_clip, null);
+    defer std.testing.allocator.free(img_spec);
+    // Just inside 2px top border (y=22.5 -> row 22, x=50) must be measurably brighter than interior (row 35, x=50)
+    const px_rim = (22 * w + 50) * 4;
+    const px_int = (35 * w + 50) * 4;
+    try std.testing.expect(img_spec[px_rim + 0] > img_spec[px_int + 0] + 30);
+    // Colored glow halo 3px above top border (row 16, x=50) must match Nord Frost hue (blue > red)
+    const px_halo = (16 * w + 50) * 4;
+    try std.testing.expect(img_spec[px_halo + 2] > 40);
+    try std.testing.expect(img_spec[px_halo + 2] > img_spec[px_halo + 0]);
+}
+
+test "Headless rasterizer: QUAD_MODE_CAPSULE rotated 45 deg and 90 deg renders without corner clipping" {
+    const black = core.Color{ 0.0, 0.0, 0.0, 1.0 };
+    const no_round_clip = [4]f32{ 0.0, 0.0, 0.0, 0.0 };
+    const w: usize = 100;
+    const h: usize = 100;
+
+    // 40x8 horizontal capsule centered at (50, 50), rotated 90 deg (pi/2) -> vertical 8x40 capsule!
+    const q_90 = [_]core.QuadInstance{.{
+        .pos_size = .{ 30.0, 46.0, 40.0, 8.0 },
+        .uv_rect = .{ std.math.pi * 0.5, 0.0, 0.0, 0.0 },
+        .color = core.Nord.aurora_green,
+        .border_color = core.Nord.transparent,
+        .params = .{ 4.0, 0.0, 0.0, core.QUAD_MODE_CAPSULE },
+    }};
+    const img_90 = try headless.renderQuadsToRgba(std.testing.allocator, w, h, &q_90, black, no_round_clip, null);
+    defer std.testing.allocator.free(img_90);
+    // Tips along Y axis at (50, 34) and (50, 66) must be painted; horizontal tips (34, 50) and (66, 50) must be black
+    try std.testing.expect(img_90[(34 * w + 50) * 4 + 1] > 150);
+    try std.testing.expect(img_90[(66 * w + 50) * 4 + 1] > 150);
+    try std.testing.expectEqual(@as(u8, 0), img_90[(50 * w + 34) * 4 + 1]);
+    try std.testing.expectEqual(@as(u8, 0), img_90[(50 * w + 66) * 4 + 1]);
+
+    // 40x8 horizontal capsule centered at (50, 50), rotated 45 deg (pi/4) -> diagonal (+12,+12) and (-12,-12) painted
+    const q_45 = [_]core.QuadInstance{.{
+        .pos_size = .{ 30.0, 46.0, 40.0, 8.0 },
+        .uv_rect = .{ std.math.pi * 0.25, 0.0, 0.0, 0.0 },
+        .color = core.Nord.aurora_orange,
+        .border_color = core.Nord.transparent,
+        .params = .{ 4.0, 0.0, 6.0, core.QUAD_MODE_CAPSULE },
+    }};
+    const img_45 = try headless.renderQuadsToRgba(std.testing.allocator, w, h, &q_45, black, no_round_clip, null);
+    defer std.testing.allocator.free(img_45);
+    // Diagonal tip (62, 62) and (38, 38) painted; opposite diagonal (62, 38) has no body (at most weak glow << body)
+    try std.testing.expect(img_45[(62 * w + 62) * 4 + 0] > 180);
+    try std.testing.expect(img_45[(38 * w + 38) * 4 + 0] > 180);
+    try std.testing.expect(img_45[(38 * w + 62) * 4 + 0] < 30);
+
+    // Round clip masks corners of QUAD_MODE_SURFACE outside circular watch bezel
+    const q_full_surf = [_]core.QuadInstance{.{
+        .pos_size = .{ 0.0, 0.0, 100.0, 100.0 },
+        .uv_rect = .{ 0.2, 0.4, 0.8, 0.2 },
+        .color = .{ 0.4, 0.6, 0.9, 1.0 },
+        .border_color = core.Nord.transparent,
+        .params = .{ 0.0, 0.0, 0.0, core.QUAD_MODE_SURFACE },
+    }};
+    const round_clip = [4]f32{ 50.0, 50.0, 40.0, 1.0 };
+    const img_rc = try headless.renderQuadsToRgba(std.testing.allocator, w, h, &q_full_surf, black, round_clip, null);
+    defer std.testing.allocator.free(img_rc);
+    // Center (50, 50) lit; corner (5, 5) outside r=40 remains black
+    try std.testing.expect(img_rc[(50 * w + 50) * 4 + 2] > 150);
+    try std.testing.expectEqual(@as(u8, 0), img_rc[(5 * w + 5) * 4 + 2]);
+
+    // QUAD_MODE_ARC: sweep > pi (1.5*pi) and crossing +/-pi (start = 0.75*pi, sweep = pi)
+    const q_reflex = [_]core.QuadInstance{.{
+        .pos_size = .{ 16.0, 16.0, 68.0, 68.0 }, // center (50,50), half=34, thick=6 -> r=31
+        .uv_rect = .{ -std.math.pi * 0.5, 1.5 * std.math.pi, 0.0, 0.0 }, // 12 -> 3 -> 6 -> 9 o'clock
+        .color = .{ 0.2, 0.8, 1.0, 1.0 },
+        .border_color = core.Nord.transparent,
+        .params = .{ 0.0, 6.0, 0.0, core.QUAD_MODE_ARC },
+    }};
+    const img_ref = try headless.renderQuadsToRgba(std.testing.allocator, w, h, &q_reflex, black, no_round_clip, null);
+    defer std.testing.allocator.free(img_ref);
+    try std.testing.expect(img_ref[(19 * w + 50) * 4 + 2] > 200); // 12 o'clock
+    try std.testing.expect(img_ref[(50 * w + 81) * 4 + 2] > 200); // 3 o'clock
+    try std.testing.expect(img_ref[(81 * w + 50) * 4 + 2] > 200); // 6 o'clock
+    try std.testing.expect(img_ref[(50 * w + 19) * 4 + 2] > 200); // 9 o'clock
+    // 10:30 (28, 28) is inside the missing top-left quadrant -> stays black
+    try std.testing.expectEqual(@as(u8, 0), img_ref[(28 * w + 28) * 4 + 2]);
+
+    const q_cross_pi = [_]core.QuadInstance{.{
+        .pos_size = .{ 16.0, 16.0, 68.0, 68.0 },
+        .uv_rect = .{ 0.75 * std.math.pi, std.math.pi, 0.0, 0.0 }, // 7:30 -> 9 -> 10:30 -> 1:30
+        .color = .{ 0.2, 0.8, 1.0, 1.0 },
+        .border_color = core.Nord.transparent,
+        .params = .{ 0.0, 6.0, 0.0, core.QUAD_MODE_ARC },
+    }};
+    const img_pi = try headless.renderQuadsToRgba(std.testing.allocator, w, h, &q_cross_pi, black, no_round_clip, null);
+    defer std.testing.allocator.free(img_pi);
+    try std.testing.expect(img_pi[(50 * w + 19) * 4 + 2] > 200); // 9 o'clock (exact +/-pi seam!)
+    try std.testing.expect(img_pi[(19 * w + 50) * 4 + 2] > 200); // 12 o'clock
+    try std.testing.expectEqual(@as(u8, 0), img_pi[(81 * w + 50) * 4 + 2]); // 6 o'clock empty
+    try std.testing.expectEqual(@as(u8, 0), img_pi[(50 * w + 81) * 4 + 2]); // 3 o'clock empty
+
+    // QUAD_MODE_CAPSULE: negative angle (-pi/4) with bw > 0 border
+    const q_neg_cap = [_]core.QuadInstance{.{
+        .pos_size = .{ 30.0, 44.0, 40.0, 12.0 },
+        .uv_rect = .{ -std.math.pi * 0.25, 0.0, 0.0, 0.0 }, // tilts bottom-left to top-right
+        .color = .{ 1.0, 0.0, 0.0, 1.0 },
+        .border_color = .{ 0.0, 1.0, 0.0, 1.0 },
+        .params = .{ 6.0, 2.0, 0.0, core.QUAD_MODE_CAPSULE },
+    }};
+    const img_nc = try headless.renderQuadsToRgba(std.testing.allocator, w, h, &q_neg_cap, black, no_round_clip, null);
+    defer std.testing.allocator.free(img_nc);
+    // Center (50, 50) red fill; top-right tip (60, 40) lit; off-diagonal (60, 60) black
+    try std.testing.expect(img_nc[(50 * w + 50) * 4 + 0] > 200);
+    try std.testing.expect(img_nc[(40 * w + 60) * 4 + 0] > 150);
+    try std.testing.expectEqual(@as(u8, 0), img_nc[(60 * w + 60) * 4 + 0]);
+    // Border pixel on edge of capsule along (-6, +6) perpendicular offset from center (46, 46)
+    try std.testing.expect(img_nc[(46 * w + 46) * 4 + 1] > 100);
+
+    // round_clip masks QUAD_MODE_ARC and QUAD_MODE_CAPSULE outside circle r=35
+    const rc_tight = [4]f32{ 50.0, 50.0, 35.0, 1.0 };
+    const q_arc_big = [_]core.QuadInstance{.{
+        .pos_size = .{ 6.0, 6.0, 88.0, 88.0 }, // r = 41 > rc_tight r=35 -> clipped!
+        .uv_rect = .{ 0.0, std.math.tau, 0.0, 0.0 },
+        .color = .{ 0.2, 0.8, 1.0, 1.0 },
+        .border_color = core.Nord.transparent,
+        .params = .{ 41.0, 6.0, 0.0, core.QUAD_MODE_ARC },
+    }};
+    const img_rc_arc = try headless.renderQuadsToRgba(std.testing.allocator, w, h, &q_arc_big, black, rc_tight, null);
+    defer std.testing.allocator.free(img_rc_arc);
+    try std.testing.expectEqual(@as(u8, 0), img_rc_arc[(50 * w + 91) * 4 + 2]);
+
+    const q_cap_big = [_]core.QuadInstance{.{
+        .pos_size = .{ 5.0, 46.0, 90.0, 8.0 }, // extends to x=95 > 50+35=85
+        .uv_rect = .{ 0.0, 0.0, 0.0, 0.0 },
+        .color = .{ 1.0, 1.0, 1.0, 1.0 },
+        .border_color = core.Nord.transparent,
+        .params = .{ 4.0, 0.0, 0.0, core.QUAD_MODE_CAPSULE },
+    }};
+    const img_rc_cap = try headless.renderQuadsToRgba(std.testing.allocator, w, h, &q_cap_big, black, rc_tight, null);
+    defer std.testing.allocator.free(img_rc_cap);
+    try std.testing.expect(img_rc_cap[(50 * w + 50) * 4 + 0] > 200);
+    try std.testing.expectEqual(@as(u8, 0), img_rc_cap[(50 * w + 90) * 4 + 0]);
+}

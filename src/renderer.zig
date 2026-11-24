@@ -66,10 +66,12 @@ const vs_source: [*:0]const u8 =
     \\out vec2 v_local_px;
     \\flat out vec2 v_half_size;
     \\out vec2 v_uv;
+    \\flat out vec4 v_uv_rect;
     \\flat out vec4 v_color;
     \\flat out vec4 v_border_color;
     \\flat out vec4 v_color_lin;
     \\flat out vec4 v_border_lin;
+    \\flat out vec4 v_aux_lin;
     \\flat out vec4 v_params;
     \\out vec2 v_frag_px;
     \\flat out vec4 v_clip_rect;
@@ -92,15 +94,21 @@ const vs_source: [*:0]const u8 =
     \\}
     \\
     \\void main() {
-    \\    if (any(isnan(a_pos_size)) || any(isinf(a_pos_size)) || any(isnan(a_params)) || any(isinf(a_params))) {
+    \\    float mode = a_params.w;
+    \\    if (any(isnan(a_pos_size)) || any(isinf(a_pos_size)) ||
+    \\        a_pos_size.z <= 0.0 || a_pos_size.w <= 0.0 ||
+    \\        any(isnan(a_params)) || any(isinf(a_params)) ||
+    \\        (mode >= 0.5 && (any(isnan(a_uv_rect)) || any(isinf(a_uv_rect))))) {
     \\        gl_Position = vec4(-2.0, -2.0, 0.0, 1.0);
     \\        v_local_px = vec2(0.0);
     \\        v_half_size = vec2(0.0);
     \\        v_uv = vec2(0.0);
+    \\        v_uv_rect = vec4(0.0);
     \\        v_color = vec4(0.0);
     \\        v_border_color = vec4(0.0);
     \\        v_color_lin = vec4(0.0);
     \\        v_border_lin = vec4(0.0);
+    \\        v_aux_lin = vec4(0.0);
     \\        v_params = vec4(0.0);
     \\        v_frag_px = vec2(-1.0);
     \\        v_clip_rect = vec4(0.0);
@@ -108,10 +116,31 @@ const vs_source: [*:0]const u8 =
     \\    }
     \\    vec2 half_size = max(a_pos_size.zw, vec2(0.0)) * 0.5;
     \\    vec2 center = a_pos_size.xy + half_size;
-    \\    bool is_glyph = a_params.w > 0.5;
+    \\    bool is_glyph = (mode >= 0.5 && mode < 1.5);
+    \\    bool is_surface = (mode >= 2.5 && mode < 3.5);
+    \\    bool is_capsule = (mode >= 3.5);
     \\    float blur = is_glyph ? 0.0 : max(a_params.z, 0.0);
     \\    float pad = is_glyph ? 0.0 : (blur * 1.5 + 2.0);
-    \\    vec2 expanded_half = half_size + vec2(pad);
+    \\    vec2 extent_half = half_size;
+    \\    if (is_glyph) {
+    \\        if (abs(a_params.x) >= 0.0001) {
+    \\            float cg = cos(a_params.x);
+    \\            float sg = sin(a_params.x);
+    \\            extent_half = vec2(
+    \\                abs(cg) * half_size.x + abs(sg) * half_size.y,
+    \\                abs(sg) * half_size.x + abs(cg) * half_size.y
+    \\            );
+    \\            pad = 1.0;
+    \\        }
+    \\    } else if (is_capsule) {
+    \\        float cc = cos(a_uv_rect.x);
+    \\        float sc = sin(a_uv_rect.x);
+    \\        extent_half = vec2(
+    \\            abs(cc) * half_size.x + abs(sc) * half_size.y,
+    \\            abs(sc) * half_size.x + abs(cc) * half_size.y
+    \\        );
+    \\    }
+    \\    vec2 expanded_half = extent_half + vec2(pad);
     \\    vec2 local_px = (a_pos * 2.0 - 1.0) * expanded_half;
     \\    vec2 frag_px = center + local_px;
     \\
@@ -122,11 +151,16 @@ const vs_source: [*:0]const u8 =
     \\    v_local_px = local_px;
     \\    v_half_size = half_size;
     \\    v_uv = mix(a_uv_rect.xy, a_uv_rect.zw, a_pos);
+    \\    v_uv_rect = a_uv_rect;
     \\    v_color = vec4(vsSanitizeUnit(a_color.r), vsSanitizeUnit(a_color.g), vsSanitizeUnit(a_color.b), vsSanitizeUnit(a_color.a));
     \\    v_border_color = vec4(vsSanitizeUnit(a_border_color.r), vsSanitizeUnit(a_border_color.g), vsSanitizeUnit(a_border_color.b), vsSanitizeUnit(a_border_color.a));
     \\    v_color_lin = is_glyph ? vec4(0.0) : vsSrgbToLinear(v_color);
     \\    v_border_lin = is_glyph ? vec4(0.0) : vsSrgbToLinear(v_border_color);
-    \\    v_params = vec4(max(a_params.x, 0.0), max(a_params.y, 0.0), blur, a_params.w);
+    \\    v_aux_lin = is_surface
+    \\        ? vsSrgbToLinear(vec4(vsSanitizeUnit(a_uv_rect.r), vsSanitizeUnit(a_uv_rect.g), vsSanitizeUnit(a_uv_rect.b), v_color.a))
+    \\        : vec4(0.0);
+    \\    float p0 = is_glyph ? a_params.x : max(a_params.x, 0.0);
+    \\    v_params = vec4(p0, max(a_params.y, 0.0), blur, mode);
     \\    v_frag_px = frag_px;
     \\    v_clip_rect = a_clip_rect;
     \\}
@@ -142,10 +176,12 @@ const fs_source: [*:0]const u8 =
     \\in vec2 v_local_px;
     \\flat in vec2 v_half_size;
     \\in vec2 v_uv;
+    \\flat in vec4 v_uv_rect;
     \\flat in vec4 v_color;
     \\flat in vec4 v_border_color;
     \\flat in vec4 v_color_lin;
     \\flat in vec4 v_border_lin;
+    \\flat in vec4 v_aux_lin;
     \\flat in vec4 v_params;
     \\in vec2 v_frag_px;
     \\flat in vec4 v_clip_rect;
@@ -184,8 +220,30 @@ const fs_source: [*:0]const u8 =
     \\        }
     \\        round_alpha = 1.0 - safeSmoothstep(-0.5, 0.5, d_round);
     \\    }
-    \\    if (v_params.w > 0.5) {
-    \\        float cov = texture(u_atlas, v_uv).r;
+    \\    float mode = v_params.w;
+    \\    if (mode >= 0.5 && mode < 1.5) {
+    \\        float cov = 0.0;
+    \\        if (abs(v_params.x) < 0.0001) {
+    \\            cov = texture(u_atlas, v_uv).r;
+    \\        } else {
+    \\            if (v_half_size.x <= 0.0 || v_half_size.y <= 0.0) {
+    \\                discard;
+    \\            }
+    \\            float cg = cos(v_params.x);
+    \\            float sg = sin(v_params.x);
+    \\            vec2 p_g = vec2(cg * v_local_px.x + sg * v_local_px.y,
+    \\                           -sg * v_local_px.x + cg * v_local_px.y);
+    \\            float dx = abs(p_g.x) - v_half_size.x;
+    \\            float dy = abs(p_g.y) - v_half_size.y;
+    \\            if (dx > 0.5 || dy > 0.5) {
+    \\                discard;
+    \\            }
+    \\            float edge_cov = (1.0 - safeSmoothstep(-0.5, 0.5, dx)) *
+    \\                             (1.0 - safeSmoothstep(-0.5, 0.5, dy));
+    \\            vec2 uv_t = clamp(p_g / (v_half_size * 2.0) + 0.5, 0.0, 1.0);
+    \\            vec2 glyph_uv = mix(v_uv_rect.xy, v_uv_rect.zw, uv_t);
+    \\            cov = texture(u_atlas, glyph_uv).r * edge_cov;
+    \\        }
     \\        float out_a = v_color.a * cov * round_alpha;
     \\        if (out_a < 0.0001) {
     \\            discard;
@@ -194,25 +252,153 @@ const fs_source: [*:0]const u8 =
     \\        return;
     \\    }
     \\
-    \\    float radius = min(v_params.x, min(v_half_size.x, v_half_size.y));
-    \\    float bw = v_params.y;
-    \\    float blur = v_params.z;
+    \\    if (mode < 0.5) {
+    \\        float radius = min(v_params.x, min(v_half_size.x, v_half_size.y));
+    \\        float bw = v_params.y;
+    \\        float blur = v_params.z;
     \\
-    \\    float d = sdRoundedBox(v_local_px, v_half_size, radius);
+    \\        float d = sdRoundedBox(v_local_px, v_half_size, radius);
     \\
-    \\    // Fast path for opaque solid interior pixels: 0 pow() calls!
-    \\    if (d < -bw - 0.5 && v_color.a >= 0.9999) {
-    \\        if (round_alpha < 0.0001) {
+    \\        // Fast path for opaque solid interior pixels: 0 pow() calls!
+    \\        if (d < -bw - 0.5 && v_color.a >= 0.9999) {
+    \\            if (round_alpha < 0.0001) {
+    \\                discard;
+    \\            }
+    \\            frag_color = vec4(v_color.rgb, round_alpha);
+    \\            return;
+    \\        }
+    \\
+    \\        float body_cov = 1.0 - safeSmoothstep(-0.5, 0.5, d);
+    \\        vec4 fill_pm = vec4(v_color_lin.rgb * v_color_lin.a, v_color_lin.a);
+    \\        vec4 border_pm = vec4(v_border_lin.rgb * v_border_lin.a, v_border_lin.a);
+    \\
+    \\        vec4 body_pm = fill_pm;
+    \\        if (bw > 0.05) {
+    \\            float border_t = safeSmoothstep(-bw - 0.5, -bw + 0.5, d);
+    \\            body_pm = mix(fill_pm, border_pm, border_t);
+    \\        }
+    \\        vec4 fg_pm = body_pm * body_cov;
+    \\
+    \\        float shadow_alpha = 0.0;
+    \\        float card_alpha = max(v_color.a, v_border_color.a);
+    \\        if (blur > 0.5 && fg_pm.a < 0.9999 && card_alpha > 0.0001) {
+    \\            float d_shadow = sdRoundedBox(v_local_px - vec2(0.0, blur * 0.25), v_half_size, radius);
+    \\            shadow_alpha = (1.0 - safeSmoothstep(-blur * 0.35, blur * 1.15, d_shadow)) * 0.32 * card_alpha;
+    \\        }
+    \\        const vec3 kShadowLin = vec3(0.002322, 0.003096, 0.004960);
+    \\        vec4 shadow_pm = vec4(kShadowLin * shadow_alpha, shadow_alpha);
+    \\
+    \\        vec4 out_pm = fg_pm + shadow_pm * (1.0 - fg_pm.a);
+    \\        float final_a = out_pm.a * round_alpha;
+    \\        if (out_pm.a < 0.0001 || final_a < 0.0001) {
     \\            discard;
     \\        }
-    \\        frag_color = vec4(v_color.rgb, round_alpha);
+    \\        frag_color = vec4(linearToSrgb(out_pm.rgb / out_pm.a), final_a);
     \\        return;
     \\    }
     \\
+    \\    if (mode < 2.5) {
+    \\        float thickness = v_params.y;
+    \\        float sweep = clamp(v_uv_rect.y, 0.0, 6.28318530718);
+    \\        if (thickness <= 0.0 || sweep <= 0.0) {
+    \\            discard;
+    \\        }
+    \\        float half_t = thickness * 0.5;
+    \\        float r_arc = (v_params.x > 0.0) ? v_params.x : max(min(v_half_size.x, v_half_size.y) - half_t, 0.0);
+    \\        float d_arc = 0.0;
+    \\        if (sweep >= 6.28218530718) {
+    \\            d_arc = abs(length(v_local_px) - r_arc) - half_t;
+    \\        } else {
+    \\            float half_sweep = sweep * 0.5;
+    \\            float mid_a = v_uv_rect.x + half_sweep;
+    \\            float cm = cos(mid_a);
+    \\            float sm = sin(mid_a);
+    \\            vec2 p_a = vec2(cm * v_local_px.x + sm * v_local_px.y,
+    \\                           abs(-sm * v_local_px.x + cm * v_local_px.y));
+    \\            vec2 sc = vec2(cos(half_sweep), sin(half_sweep));
+    \\            float dist_center = (sc.y * p_a.x - sc.x * p_a.y >= 0.0)
+    \\                ? abs(length(p_a) - r_arc)
+    \\                : length(p_a - r_arc * sc);
+    \\            d_arc = dist_center - half_t;
+    \\        }
+    \\        float body_cov = 1.0 - safeSmoothstep(-0.5, 0.5, d_arc);
+    \\        vec4 fill_pm = vec4(v_color_lin.rgb * v_color_lin.a, v_color_lin.a);
+    \\        vec4 fg_pm = fill_pm * body_cov;
+    \\        float blur = v_params.z;
+    \\        float glow_alpha = 0.0;
+    \\        if (blur > 0.5 && fg_pm.a < 0.9999 && v_color.a > 0.0001) {
+    \\            float g = 1.0 - safeSmoothstep(0.0, blur * 1.25, max(d_arc, 0.0));
+    \\            glow_alpha = g * g * 0.45 * v_color.a;
+    \\        }
+    \\        vec4 glow_pm = vec4(v_color_lin.rgb * glow_alpha, glow_alpha);
+    \\        vec4 out_pm = fg_pm + glow_pm * (1.0 - fg_pm.a);
+    \\        float final_a = out_pm.a * round_alpha;
+    \\        if (out_pm.a < 0.0001 || final_a < 0.0001) {
+    \\            discard;
+    \\        }
+    \\        frag_color = vec4(linearToSrgb(out_pm.rgb / out_pm.a), final_a);
+    \\        return;
+    \\    }
+    \\
+    \\    if (mode < 3.5) {
+    \\        float radius = min(v_params.x, min(v_half_size.x, v_half_size.y));
+    \\        float bw = v_params.y;
+    \\        float blur = v_params.z;
+    \\        float d = sdRoundedBox(v_local_px, v_half_size, radius);
+    \\        float body_cov = 1.0 - safeSmoothstep(-0.5, 0.5, d);
+    \\
+    \\        float grad_t = clamp((v_local_px.y + v_half_size.y) / max(v_half_size.y * 2.0, 0.0001), 0.0, 1.0);
+    \\        vec4 grad_lin = mix(v_color_lin, v_aux_lin, grad_t);
+    \\        vec4 fill_pm = vec4(grad_lin.rgb * grad_lin.a, grad_lin.a);
+    \\
+    \\        float top_spec = clamp(v_uv_rect.w, 0.0, 1.0);
+    \\        if (top_spec > 0.0001 && v_color.a > 0.0001) {
+    \\            float rim_inset = (bw > 0.05) ? bw : 0.0;
+    \\            float rim_dist = -d - rim_inset;
+    \\            float fade_h = max(min(v_half_size.y * 0.5, max(radius + 4.0, 12.0)), 1.5);
+    \\            float top_t = clamp(1.0 - (v_local_px.y + v_half_size.y) / fade_h, 0.0, 1.0);
+    \\            float rim_mask = (1.0 - safeSmoothstep(0.0, 1.8, max(rim_dist, 0.0))) *
+    \\                             safeSmoothstep(-0.25, 0.25, rim_dist);
+    \\            float spec_a = top_spec * rim_mask * top_t * v_color.a;
+    \\            fill_pm = vec4(1.0, 1.0, 1.0, 1.0) * spec_a + fill_pm * (1.0 - spec_a);
+    \\        }
+    \\
+    \\        vec4 border_pm = vec4(v_border_lin.rgb * v_border_lin.a, v_border_lin.a);
+    \\        vec4 body_pm = fill_pm;
+    \\        if (bw > 0.05) {
+    \\            float border_t = safeSmoothstep(-bw - 0.5, -bw + 0.5, d);
+    \\            body_pm = mix(fill_pm, border_pm, border_t);
+    \\        }
+    \\        vec4 fg_pm = body_pm * body_cov;
+    \\
+    \\        float glow_alpha = 0.0;
+    \\        if (blur > 0.5 && fg_pm.a < 0.9999 && v_border_color.a > 0.0001) {
+    \\            float g = 1.0 - safeSmoothstep(0.0, blur * 1.25, max(d, 0.0));
+    \\            glow_alpha = g * g * 0.45 * v_border_color.a;
+    \\        }
+    \\        vec4 glow_pm = vec4(v_border_lin.rgb * glow_alpha, glow_alpha);
+    \\        vec4 out_pm = fg_pm + glow_pm * (1.0 - fg_pm.a);
+    \\        float final_a = out_pm.a * round_alpha;
+    \\        if (out_pm.a < 0.0001 || final_a < 0.0001) {
+    \\            discard;
+    \\        }
+    \\        frag_color = vec4(linearToSrgb(out_pm.rgb / out_pm.a), final_a);
+    \\        return;
+    \\    }
+    \\
+    \\    // QUAD_MODE_CAPSULE (mode >= 3.5)
+    \\    float radius = min(v_params.x, min(v_half_size.x, v_half_size.y));
+    \\    float bw = v_params.y;
+    \\    float blur = v_params.z;
+    \\    float cc = cos(v_uv_rect.x);
+    \\    float sc = sin(v_uv_rect.x);
+    \\    vec2 p_c = vec2(cc * v_local_px.x + sc * v_local_px.y,
+    \\                   -sc * v_local_px.x + cc * v_local_px.y);
+    \\    float d = sdRoundedBox(p_c, v_half_size, radius);
     \\    float body_cov = 1.0 - safeSmoothstep(-0.5, 0.5, d);
+    \\
     \\    vec4 fill_pm = vec4(v_color_lin.rgb * v_color_lin.a, v_color_lin.a);
     \\    vec4 border_pm = vec4(v_border_lin.rgb * v_border_lin.a, v_border_lin.a);
-    \\
     \\    vec4 body_pm = fill_pm;
     \\    if (bw > 0.05) {
     \\        float border_t = safeSmoothstep(-bw - 0.5, -bw + 0.5, d);
@@ -220,16 +406,13 @@ const fs_source: [*:0]const u8 =
     \\    }
     \\    vec4 fg_pm = body_pm * body_cov;
     \\
-    \\    float shadow_alpha = 0.0;
-    \\    float card_alpha = max(v_color.a, v_border_color.a);
-    \\    if (blur > 0.5 && fg_pm.a < 0.9999 && card_alpha > 0.0001) {
-    \\        float d_shadow = sdRoundedBox(v_local_px - vec2(0.0, blur * 0.25), v_half_size, radius);
-    \\        shadow_alpha = (1.0 - safeSmoothstep(-blur * 0.35, blur * 1.15, d_shadow)) * 0.32 * card_alpha;
+    \\    float glow_alpha = 0.0;
+    \\    if (blur > 0.5 && fg_pm.a < 0.9999 && v_color.a > 0.0001) {
+    \\        float g = 1.0 - safeSmoothstep(0.0, blur * 1.25, max(d, 0.0));
+    \\        glow_alpha = g * g * 0.45 * v_color.a;
     \\    }
-    \\    const vec3 kShadowLin = vec3(0.002322, 0.003096, 0.004960);
-    \\    vec4 shadow_pm = vec4(kShadowLin * shadow_alpha, shadow_alpha);
-    \\
-    \\    vec4 out_pm = fg_pm + shadow_pm * (1.0 - fg_pm.a);
+    \\    vec4 glow_pm = vec4(v_color_lin.rgb * glow_alpha, glow_alpha);
+    \\    vec4 out_pm = fg_pm + glow_pm * (1.0 - fg_pm.a);
     \\    float final_a = out_pm.a * round_alpha;
     \\    if (out_pm.a < 0.0001 || final_a < 0.0001) {
     \\        discard;

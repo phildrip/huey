@@ -36,6 +36,12 @@ pub const DiffStats = struct {
     max_diff: u8,
 };
 
+pub const AtlasView = struct {
+    pixels: []const u8,
+    width: u32,
+    height: u32,
+};
+
 pub const HeadlessSession = struct {
     allocator: std.mem.Allocator,
     arena: core.LayoutArena,
@@ -367,6 +373,15 @@ pub const HeadlessSession = struct {
         allocator: std.mem.Allocator,
         annotate_bounds: bool,
     ) ![]u8 {
+        return self.renderSnapshotRgbaWithAtlas(allocator, annotate_bounds, null);
+    }
+
+    pub fn renderSnapshotRgbaWithAtlas(
+        self: *const HeadlessSession,
+        allocator: std.mem.Allocator,
+        annotate_bounds: bool,
+        atlas: ?AtlasView,
+    ) ![]u8 {
         if (!isPositiveFinite(self.viewport_w) or !isPositiveFinite(self.viewport_h) or !isPositiveFinite(self.scale_factor)) {
             return error.InvalidViewport;
         }
@@ -379,28 +394,17 @@ pub const HeadlessSession = struct {
         }
         const phys_w: usize = @intFromFloat(phys_w_f);
         const phys_h: usize = @intFromFloat(phys_h_f);
-        const px_count = try std.math.mul(usize, phys_w, phys_h);
-        const byte_len = try std.math.mul(usize, px_count, 4);
-
-        const buf = try allocator.alloc(u8, byte_len);
-        errdefer allocator.free(buf);
-
-        const bg_r = floatToU8(core.Nord.polar_night_0[0]);
-        const bg_g = floatToU8(core.Nord.polar_night_0[1]);
-        const bg_b = floatToU8(core.Nord.polar_night_0[2]);
-        const bg_a = floatToU8(core.Nord.polar_night_0[3]);
-        var p: usize = 0;
-        while (p < byte_len) : (p += 4) {
-            buf[p + 0] = bg_r;
-            buf[p + 1] = bg_g;
-            buf[p + 2] = bg_b;
-            buf[p + 3] = bg_a;
-        }
-
         const quads = self.quad_buf[0..@min(self.last_quad_count, self.quad_buf.len)];
-        for (quads) |q| {
-            rasterizeQuad(buf, phys_w, phys_h, q);
-        }
+        const buf = try renderQuadsToRgba(
+            allocator,
+            phys_w,
+            phys_h,
+            quads,
+            core.Nord.polar_night_0,
+            .{ 0.0, 0.0, 0.0, 0.0 },
+            atlas,
+        );
+        errdefer allocator.free(buf);
 
         if (annotate_bounds) {
             const slice = self.arena.nodes.slice();
@@ -422,6 +426,43 @@ pub const HeadlessSession = struct {
         return buf;
     }
 };
+
+pub fn renderQuadsToRgba(
+    allocator: std.mem.Allocator,
+    phys_w: usize,
+    phys_h: usize,
+    quads: []const core.QuadInstance,
+    clear_srgb: core.Color,
+    round_clip: [4]f32,
+    atlas: ?AtlasView,
+) ![]u8 {
+    if (phys_w == 0 or phys_h == 0 or phys_w > 16384 or phys_h > 16384) {
+        return error.InvalidViewport;
+    }
+    const px_count = try std.math.mul(usize, phys_w, phys_h);
+    const byte_len = try std.math.mul(usize, px_count, 4);
+
+    const buf = try allocator.alloc(u8, byte_len);
+    errdefer allocator.free(buf);
+
+    const safe_clear = clampColor(clear_srgb);
+    const bg_r = floatToU8(safe_clear[0]);
+    const bg_g = floatToU8(safe_clear[1]);
+    const bg_b = floatToU8(safe_clear[2]);
+    const bg_a = floatToU8(safe_clear[3]);
+    var p: usize = 0;
+    while (p < byte_len) : (p += 4) {
+        buf[p + 0] = bg_r;
+        buf[p + 1] = bg_g;
+        buf[p + 2] = bg_b;
+        buf[p + 3] = bg_a;
+    }
+
+    for (quads) |q| {
+        rasterizeQuadInternal(buf, phys_w, phys_h, q, round_clip, atlas);
+    }
+    return buf;
+}
 
 pub fn diffRgba(a: []const u8, b: []const u8, max_channel_delta: u8) DiffStats {
     const a_full = a.len / 4;
@@ -778,17 +819,97 @@ fn mix4(a: [4]f32, b: [4]f32, t: f32) [4]f32 {
     };
 }
 
+fn sampleAtlasLinear(atlas: AtlasView, u_raw: f32, v_raw: f32) f32 {
+    if (atlas.width == 0 or atlas.height == 0) return 0.0;
+    const expected_len = std.math.mul(usize, @as(usize, atlas.width), @as(usize, atlas.height)) catch return 0.0;
+    if (atlas.pixels.len < expected_len) return 0.0;
+
+    const u = std.math.clamp(u_raw, 0.0, 1.0);
+    const v = std.math.clamp(v_raw, 0.0, 1.0);
+    const wf: f32 = @floatFromInt(atlas.width);
+    const hf: f32 = @floatFromInt(atlas.height);
+    const tx = u * wf - 0.5;
+    const ty = v * hf - 0.5;
+    const x0_i: isize = @intFromFloat(@floor(tx));
+    const y0_i: isize = @intFromFloat(@floor(ty));
+    const fx = tx - @as(f32, @floatFromInt(x0_i));
+    const fy = ty - @as(f32, @floatFromInt(y0_i));
+    const max_x: isize = @intCast(atlas.width - 1);
+    const max_y: isize = @intCast(atlas.height - 1);
+    const ix0: usize = @intCast(std.math.clamp(x0_i, 0, max_x));
+    const ix1: usize = @intCast(std.math.clamp(x0_i + 1, 0, max_x));
+    const iy0: usize = @intCast(std.math.clamp(y0_i, 0, max_y));
+    const iy1: usize = @intCast(std.math.clamp(y0_i + 1, 0, max_y));
+
+    const w_u: usize = @intCast(atlas.width);
+    const p00 = @as(f32, @floatFromInt(atlas.pixels[iy0 * w_u + ix0])) / 255.0;
+    const p10 = @as(f32, @floatFromInt(atlas.pixels[iy0 * w_u + ix1])) / 255.0;
+    const p01 = @as(f32, @floatFromInt(atlas.pixels[iy1 * w_u + ix0])) / 255.0;
+    const p11 = @as(f32, @floatFromInt(atlas.pixels[iy1 * w_u + ix1])) / 255.0;
+    const top = p00 + (p10 - p00) * fx;
+    const bot = p01 + (p11 - p01) * fx;
+    return top + (bot - top) * fy;
+}
+
+fn compositePmPixel(buf: []u8, phys_w: usize, px: usize, py: usize, out_pm: [4]f32, round_alpha: f32) void {
+    const out_a = out_pm[3];
+    const final_a = out_a * round_alpha;
+    if (out_a < 1e-4 or final_a < 1e-4) return;
+
+    const out_srgb = core.linearToSrgbColor(.{
+        out_pm[0] / out_a,
+        out_pm[1] / out_a,
+        out_pm[2] / out_a,
+        final_a,
+    });
+    const off = (py * phys_w + px) * 4;
+    const dst_srgb = core.Color{
+        @as(f32, @floatFromInt(buf[off + 0])) / 255.0,
+        @as(f32, @floatFromInt(buf[off + 1])) / 255.0,
+        @as(f32, @floatFromInt(buf[off + 2])) / 255.0,
+        @as(f32, @floatFromInt(buf[off + 3])) / 255.0,
+    };
+    const blended = core.blendOverLinear(out_srgb, dst_srgb);
+    buf[off + 0] = floatToU8(blended[0]);
+    buf[off + 1] = floatToU8(blended[1]);
+    buf[off + 2] = floatToU8(blended[2]);
+    buf[off + 3] = floatToU8(blended[3]);
+}
+
 pub fn rasterizeQuad(buf: []u8, phys_w: usize, phys_h: usize, q: core.QuadInstance) void {
+    rasterizeQuadWithAtlas(buf, phys_w, phys_h, q, null);
+}
+
+pub fn rasterizeQuadWithAtlas(buf: []u8, phys_w: usize, phys_h: usize, q: core.QuadInstance, atlas: ?AtlasView) void {
+    rasterizeQuadInternal(buf, phys_w, phys_h, q, .{ 0.0, 0.0, 0.0, 0.0 }, atlas);
+}
+
+fn rasterizeQuadInternal(
+    buf: []u8,
+    phys_w: usize,
+    phys_h: usize,
+    q: core.QuadInstance,
+    round_clip: [4]f32,
+    atlas_opt: ?AtlasView,
+) void {
+    if (phys_w == 0 or phys_h == 0) return;
     if (!allFinite4(q.pos_size) or !allFinite4(q.params) or
         !allFinite4(q.color) or !allFinite4(q.border_color) or
         !allFinite4(q.clip_rect))
     {
         return;
     }
-    // Skip glyph quads when no atlas is bound in headless rasterizer.
-    if (q.params[3] > 0.5) return;
+    const mode = q.params[3];
+    if (mode >= 0.5 and !allFinite4(q.uv_rect)) return;
     if (q.pos_size[2] <= 0.0 or q.pos_size[3] <= 0.0) return;
     if (q.clip_rect[2] <= q.clip_rect[0] or q.clip_rect[3] <= q.clip_rect[1]) return;
+
+    const is_glyph = (mode >= 0.5 and mode < 1.5);
+    const is_arc = (mode >= 1.5 and mode < 2.5);
+    const is_surface = (mode >= 2.5 and mode < 3.5);
+    const is_capsule = (mode >= 3.5);
+
+    if (is_glyph and atlas_opt == null) return;
 
     const col = clampColor(q.color);
     const bcol = clampColor(q.border_color);
@@ -798,15 +919,28 @@ pub fn rasterizeQuad(buf: []u8, phys_w: usize, phys_h: usize, q: core.QuadInstan
     const cx = q.pos_size[0] + half_w;
     const cy = q.pos_size[1] + half_h;
 
-    const blur = @max(q.params[2], 0.0);
-    const pad = blur * 1.5 + 2.0;
-    const radius = @min(@max(q.params[0], 0.0), @min(half_w, half_h));
-    const bw = @max(q.params[1], 0.0);
+    const blur = if (is_glyph) 0.0 else @max(q.params[2], 0.0);
+    var pad: f32 = if (is_glyph) 0.0 else (blur * 1.5 + 2.0);
+    var ext_w = half_w;
+    var ext_h = half_h;
 
-    const min_x_f = @max(@floor(cx - half_w - pad), @floor(q.clip_rect[0]));
-    const min_y_f = @max(@floor(cy - half_h - pad), @floor(q.clip_rect[1]));
-    const max_x_f = @min(@ceil(cx + half_w + pad), @ceil(q.clip_rect[2]));
-    const max_y_f = @min(@ceil(cy + half_h + pad), @ceil(q.clip_rect[3]));
+    if (is_glyph and @abs(q.params[0]) >= 0.0001) {
+        const cg = @cos(q.params[0]);
+        const sg = @sin(q.params[0]);
+        ext_w = @abs(cg) * half_w + @abs(sg) * half_h;
+        ext_h = @abs(sg) * half_w + @abs(cg) * half_h;
+        pad = 1.0;
+    } else if (is_capsule) {
+        const cc = @cos(q.uv_rect[0]);
+        const sc = @sin(q.uv_rect[0]);
+        ext_w = @abs(cc) * half_w + @abs(sc) * half_h;
+        ext_h = @abs(sc) * half_w + @abs(cc) * half_h;
+    }
+
+    const min_x_f = @max(@floor(cx - ext_w - pad), @floor(q.clip_rect[0]));
+    const min_y_f = @max(@floor(cy - ext_h - pad), @floor(q.clip_rect[1]));
+    const max_x_f = @min(@ceil(cx + ext_w + pad), @ceil(q.clip_rect[2]));
+    const max_y_f = @min(@ceil(cy + ext_h + pad), @ceil(q.clip_rect[3]));
     if (!std.math.isFinite(min_x_f) or !std.math.isFinite(min_y_f) or
         !std.math.isFinite(max_x_f) or !std.math.isFinite(max_y_f))
     {
@@ -823,6 +957,75 @@ pub fn rasterizeQuad(buf: []u8, phys_w: usize, phys_h: usize, q: core.QuadInstan
     const y1: usize = @intFromFloat(std.math.clamp(max_y_f, 0.0, max_h_f));
     if (x1 <= x0 or y1 <= y0) return;
 
+    const use_round_clip = allFinite4(round_clip) and round_clip[3] > 0.5 and round_clip[2] > 0.0;
+
+    if (is_glyph) {
+        const atlas = atlas_opt.?;
+        const angle = q.params[0];
+        const rotated = @abs(angle) >= 0.0001;
+        const cg = if (rotated) @cos(angle) else 1.0;
+        const sg = if (rotated) @sin(angle) else 0.0;
+        const inv_w2 = 1.0 / @max(half_w * 2.0, 1e-4);
+        const inv_h2 = 1.0 / @max(half_h * 2.0, 1e-4);
+
+        for (y0..y1) |py| {
+            const py_center = @as(f32, @floatFromInt(py)) + 0.5;
+            if (py_center < q.clip_rect[1] or py_center > q.clip_rect[3]) continue;
+            const local_y = py_center - cy;
+            for (x0..x1) |px| {
+                const px_center = @as(f32, @floatFromInt(px)) + 0.5;
+                if (px_center < q.clip_rect[0] or px_center > q.clip_rect[2]) continue;
+
+                var round_alpha: f32 = 1.0;
+                if (use_round_clip) {
+                    const d_round = std.math.hypot(px_center - round_clip[0], py_center - round_clip[1]) - round_clip[2];
+                    if (d_round > 0.5) continue;
+                    round_alpha = 1.0 - smoothstep(-0.5, 0.5, d_round);
+                }
+
+                const local_x = px_center - cx;
+                var cov: f32 = 0.0;
+                if (!rotated) {
+                    const ut = local_x * inv_w2 + 0.5;
+                    const vt = local_y * inv_h2 + 0.5;
+                    if (ut < 0.0 or ut > 1.0 or vt < 0.0 or vt > 1.0) continue;
+                    const u = q.uv_rect[0] + (q.uv_rect[2] - q.uv_rect[0]) * ut;
+                    const v = q.uv_rect[1] + (q.uv_rect[3] - q.uv_rect[1]) * vt;
+                    cov = sampleAtlasLinear(atlas, u, v);
+                } else {
+                    const pgx = cg * local_x + sg * local_y;
+                    const pgy = -sg * local_x + cg * local_y;
+                    const dx = @abs(pgx) - half_w;
+                    const dy = @abs(pgy) - half_h;
+                    if (dx > 0.5 or dy > 0.5) continue;
+                    const edge_cov = (1.0 - smoothstep(-0.5, 0.5, dx)) *
+                        (1.0 - smoothstep(-0.5, 0.5, dy));
+                    const ut = std.math.clamp(pgx * inv_w2 + 0.5, 0.0, 1.0);
+                    const vt = std.math.clamp(pgy * inv_h2 + 0.5, 0.0, 1.0);
+                    const u = q.uv_rect[0] + (q.uv_rect[2] - q.uv_rect[0]) * ut;
+                    const v = q.uv_rect[1] + (q.uv_rect[3] - q.uv_rect[1]) * vt;
+                    cov = sampleAtlasLinear(atlas, u, v) * edge_cov;
+                }
+
+                const out_a = col[3] * cov * round_alpha;
+                if (out_a < 1e-4) continue;
+                const off = (py * phys_w + px) * 4;
+                const dst_srgb = core.Color{
+                    @as(f32, @floatFromInt(buf[off + 0])) / 255.0,
+                    @as(f32, @floatFromInt(buf[off + 1])) / 255.0,
+                    @as(f32, @floatFromInt(buf[off + 2])) / 255.0,
+                    @as(f32, @floatFromInt(buf[off + 3])) / 255.0,
+                };
+                const blended = core.blendOverLinear(.{ col[0], col[1], col[2], out_a }, dst_srgb);
+                buf[off + 0] = floatToU8(blended[0]);
+                buf[off + 1] = floatToU8(blended[1]);
+                buf[off + 2] = floatToU8(blended[2]);
+                buf[off + 3] = floatToU8(blended[3]);
+            }
+        }
+        return;
+    }
+
     const col_lin = core.srgbToLinearColor(col);
     const bcol_lin = core.srgbToLinearColor(bcol);
     const fill_pm = [4]f32{
@@ -837,7 +1040,241 @@ pub fn rasterizeQuad(buf: []u8, phys_w: usize, phys_h: usize, q: core.QuadInstan
         bcol_lin[2] * bcol_lin[3],
         bcol_lin[3],
     };
+
+    if (is_arc) {
+        const thickness = @max(q.params[1], 0.0);
+        const sweep = std.math.clamp(q.uv_rect[1], 0.0, std.math.tau);
+        if (thickness <= 0.0 or sweep <= 0.0) return;
+        const half_t = thickness * 0.5;
+        const p0_nonneg = @max(q.params[0], 0.0);
+        const r_arc = if (p0_nonneg > 0.0) p0_nonneg else @max(@min(half_w, half_h) - half_t, 0.0);
+        const full_ring = sweep >= std.math.tau - 0.001;
+        const half_sweep = sweep * 0.5;
+        const mid_a = q.uv_rect[0] + half_sweep;
+        const cm = @cos(mid_a);
+        const sm = @sin(mid_a);
+        const sc_x = @cos(half_sweep);
+        const sc_y = @sin(half_sweep);
+
+        for (y0..y1) |py| {
+            const py_center = @as(f32, @floatFromInt(py)) + 0.5;
+            if (py_center < q.clip_rect[1] or py_center > q.clip_rect[3]) continue;
+            const local_y = py_center - cy;
+            for (x0..x1) |px| {
+                const px_center = @as(f32, @floatFromInt(px)) + 0.5;
+                if (px_center < q.clip_rect[0] or px_center > q.clip_rect[2]) continue;
+
+                var round_alpha: f32 = 1.0;
+                if (use_round_clip) {
+                    const d_round = std.math.hypot(px_center - round_clip[0], py_center - round_clip[1]) - round_clip[2];
+                    if (d_round > 0.5) continue;
+                    round_alpha = 1.0 - smoothstep(-0.5, 0.5, d_round);
+                }
+
+                const local_x = px_center - cx;
+                const d_arc: f32 = if (full_ring)
+                    @abs(std.math.hypot(local_x, local_y) - r_arc) - half_t
+                else blk: {
+                    const pax = cm * local_x + sm * local_y;
+                    const pay = @abs(-sm * local_x + cm * local_y);
+                    const dist_center = if (sc_y * pax - sc_x * pay >= 0.0)
+                        @abs(std.math.hypot(pax, pay) - r_arc)
+                    else
+                        std.math.hypot(pax - r_arc * sc_x, pay - r_arc * sc_y);
+                    break :blk dist_center - half_t;
+                };
+
+                const body_cov = 1.0 - smoothstep(-0.5, 0.5, d_arc);
+                const fg_pm = [4]f32{
+                    fill_pm[0] * body_cov,
+                    fill_pm[1] * body_cov,
+                    fill_pm[2] * body_cov,
+                    fill_pm[3] * body_cov,
+                };
+
+                var glow_alpha: f32 = 0.0;
+                if (blur > 0.5 and fg_pm[3] < 0.9999 and col[3] > 1e-4) {
+                    const g = 1.0 - smoothstep(0.0, blur * 1.25, @max(d_arc, 0.0));
+                    glow_alpha = g * g * 0.45 * col[3];
+                }
+                const glow_pm = [4]f32{
+                    col_lin[0] * glow_alpha,
+                    col_lin[1] * glow_alpha,
+                    col_lin[2] * glow_alpha,
+                    glow_alpha,
+                };
+                const inv_fg = 1.0 - fg_pm[3];
+                const out_pm = [4]f32{
+                    fg_pm[0] + glow_pm[0] * inv_fg,
+                    fg_pm[1] + glow_pm[1] * inv_fg,
+                    fg_pm[2] + glow_pm[2] * inv_fg,
+                    fg_pm[3] + glow_pm[3] * inv_fg,
+                };
+                compositePmPixel(buf, phys_w, px, py, out_pm, round_alpha);
+            }
+        }
+        return;
+    }
+
+    const radius = @min(@max(q.params[0], 0.0), @min(half_w, half_h));
+    const bw = @max(q.params[1], 0.0);
+
+    if (is_surface) {
+        const bot_srgb = core.Color{
+            std.math.clamp(q.uv_rect[0], 0.0, 1.0),
+            std.math.clamp(q.uv_rect[1], 0.0, 1.0),
+            std.math.clamp(q.uv_rect[2], 0.0, 1.0),
+            col[3],
+        };
+        const bot_lin = core.srgbToLinearColor(bot_srgb);
+        const top_spec = std.math.clamp(q.uv_rect[3], 0.0, 1.0);
+        const inv_h2 = 1.0 / @max(half_h * 2.0, 1e-4);
+        const fade_h = @max(@min(half_h * 0.5, @max(radius + 4.0, 12.0)), 1.5);
+        const rim_inset: f32 = if (bw > 0.05) bw else 0.0;
+
+        for (y0..y1) |py| {
+            const py_center = @as(f32, @floatFromInt(py)) + 0.5;
+            if (py_center < q.clip_rect[1] or py_center > q.clip_rect[3]) continue;
+            const local_y = py_center - cy;
+            const grad_t = std.math.clamp((local_y + half_h) * inv_h2, 0.0, 1.0);
+            const grad_lin = mix4(col_lin, bot_lin, grad_t);
+            const base_fill_pm = [4]f32{
+                grad_lin[0] * grad_lin[3],
+                grad_lin[1] * grad_lin[3],
+                grad_lin[2] * grad_lin[3],
+                grad_lin[3],
+            };
+            const top_t = std.math.clamp(1.0 - (local_y + half_h) / fade_h, 0.0, 1.0);
+
+            for (x0..x1) |px| {
+                const px_center = @as(f32, @floatFromInt(px)) + 0.5;
+                if (px_center < q.clip_rect[0] or px_center > q.clip_rect[2]) continue;
+
+                var round_alpha: f32 = 1.0;
+                if (use_round_clip) {
+                    const d_round = std.math.hypot(px_center - round_clip[0], py_center - round_clip[1]) - round_clip[2];
+                    if (d_round > 0.5) continue;
+                    round_alpha = 1.0 - smoothstep(-0.5, 0.5, d_round);
+                }
+
+                const local_x = px_center - cx;
+                const d = sdRoundedBox(local_x, local_y, half_w, half_h, radius);
+                const body_cov = 1.0 - smoothstep(-0.5, 0.5, d);
+
+                var s_fill_pm = base_fill_pm;
+                if (top_spec > 1e-4 and col[3] > 1e-4) {
+                    const rim_dist = -d - rim_inset;
+                    const rim_mask = (1.0 - smoothstep(0.0, 1.8, @max(rim_dist, 0.0))) *
+                        smoothstep(-0.25, 0.25, rim_dist);
+                    const spec_a = top_spec * rim_mask * top_t * col[3];
+                    const inv_sa = 1.0 - spec_a;
+                    s_fill_pm = .{
+                        spec_a + s_fill_pm[0] * inv_sa,
+                        spec_a + s_fill_pm[1] * inv_sa,
+                        spec_a + s_fill_pm[2] * inv_sa,
+                        spec_a + s_fill_pm[3] * inv_sa,
+                    };
+                }
+
+                var body_pm = s_fill_pm;
+                if (bw > 0.05) {
+                    const border_t = smoothstep(-bw - 0.5, -bw + 0.5, d);
+                    body_pm = mix4(s_fill_pm, border_pm, border_t);
+                }
+                const fg_pm = [4]f32{
+                    body_pm[0] * body_cov,
+                    body_pm[1] * body_cov,
+                    body_pm[2] * body_cov,
+                    body_pm[3] * body_cov,
+                };
+
+                var glow_alpha: f32 = 0.0;
+                if (blur > 0.5 and fg_pm[3] < 0.9999 and bcol[3] > 1e-4) {
+                    const g = 1.0 - smoothstep(0.0, blur * 1.25, @max(d, 0.0));
+                    glow_alpha = g * g * 0.45 * bcol[3];
+                }
+                const glow_pm = [4]f32{
+                    bcol_lin[0] * glow_alpha,
+                    bcol_lin[1] * glow_alpha,
+                    bcol_lin[2] * glow_alpha,
+                    glow_alpha,
+                };
+                const inv_fg = 1.0 - fg_pm[3];
+                const out_pm = [4]f32{
+                    fg_pm[0] + glow_pm[0] * inv_fg,
+                    fg_pm[1] + glow_pm[1] * inv_fg,
+                    fg_pm[2] + glow_pm[2] * inv_fg,
+                    fg_pm[3] + glow_pm[3] * inv_fg,
+                };
+                compositePmPixel(buf, phys_w, px, py, out_pm, round_alpha);
+            }
+        }
+        return;
+    }
+
+    if (is_capsule) {
+        const cc = @cos(q.uv_rect[0]);
+        const sc = @sin(q.uv_rect[0]);
+        for (y0..y1) |py| {
+            const py_center = @as(f32, @floatFromInt(py)) + 0.5;
+            if (py_center < q.clip_rect[1] or py_center > q.clip_rect[3]) continue;
+            const local_y = py_center - cy;
+            for (x0..x1) |px| {
+                const px_center = @as(f32, @floatFromInt(px)) + 0.5;
+                if (px_center < q.clip_rect[0] or px_center > q.clip_rect[2]) continue;
+
+                var round_alpha: f32 = 1.0;
+                if (use_round_clip) {
+                    const d_round = std.math.hypot(px_center - round_clip[0], py_center - round_clip[1]) - round_clip[2];
+                    if (d_round > 0.5) continue;
+                    round_alpha = 1.0 - smoothstep(-0.5, 0.5, d_round);
+                }
+
+                const local_x = px_center - cx;
+                const pcx = cc * local_x + sc * local_y;
+                const pcy = -sc * local_x + cc * local_y;
+                const d = sdRoundedBox(pcx, pcy, half_w, half_h, radius);
+                const body_cov = 1.0 - smoothstep(-0.5, 0.5, d);
+
+                var body_pm = fill_pm;
+                if (bw > 0.05) {
+                    const border_t = smoothstep(-bw - 0.5, -bw + 0.5, d);
+                    body_pm = mix4(fill_pm, border_pm, border_t);
+                }
+                const fg_pm = [4]f32{
+                    body_pm[0] * body_cov,
+                    body_pm[1] * body_cov,
+                    body_pm[2] * body_cov,
+                    body_pm[3] * body_cov,
+                };
+
+                var glow_alpha: f32 = 0.0;
+                if (blur > 0.5 and fg_pm[3] < 0.9999 and col[3] > 1e-4) {
+                    const g = 1.0 - smoothstep(0.0, blur * 1.25, @max(d, 0.0));
+                    glow_alpha = g * g * 0.45 * col[3];
+                }
+                const glow_pm = [4]f32{
+                    col_lin[0] * glow_alpha,
+                    col_lin[1] * glow_alpha,
+                    col_lin[2] * glow_alpha,
+                    glow_alpha,
+                };
+                const inv_fg = 1.0 - fg_pm[3];
+                const out_pm = [4]f32{
+                    fg_pm[0] + glow_pm[0] * inv_fg,
+                    fg_pm[1] + glow_pm[1] * inv_fg,
+                    fg_pm[2] + glow_pm[2] * inv_fg,
+                    fg_pm[3] + glow_pm[3] * inv_fg,
+                };
+                compositePmPixel(buf, phys_w, px, py, out_pm, round_alpha);
+            }
+        }
+        return;
+    }
+
+    // QUAD_MODE_RECT (mode < 0.5, including AMBIENT_FG_SDF_MODE = 0.25)
     const shadow_lin = core.srgbToLinearColor(.{ 0.03, 0.04, 0.06, 1.0 });
+    const card_alpha = @max(col[3], bcol[3]);
 
     for (y0..y1) |py| {
         const py_center = @as(f32, @floatFromInt(py)) + 0.5;
@@ -846,8 +1283,15 @@ pub fn rasterizeQuad(buf: []u8, phys_w: usize, phys_h: usize, q: core.QuadInstan
         for (x0..x1) |px| {
             const px_center = @as(f32, @floatFromInt(px)) + 0.5;
             if (px_center < q.clip_rect[0] or px_center > q.clip_rect[2]) continue;
-            const local_x = px_center - cx;
 
+            var round_alpha: f32 = 1.0;
+            if (use_round_clip) {
+                const d_round = std.math.hypot(px_center - round_clip[0], py_center - round_clip[1]) - round_clip[2];
+                if (d_round > 0.5) continue;
+                round_alpha = 1.0 - smoothstep(-0.5, 0.5, d_round);
+            }
+
+            const local_x = px_center - cx;
             const d = sdRoundedBox(local_x, local_y, half_w, half_h, radius);
             const body_cov = 1.0 - smoothstep(-0.5, 0.5, d);
 
@@ -864,9 +1308,9 @@ pub fn rasterizeQuad(buf: []u8, phys_w: usize, phys_h: usize, q: core.QuadInstan
             };
 
             var shadow_alpha: f32 = 0.0;
-            if (blur > 0.5) {
+            if (blur > 0.5 and fg_pm[3] < 0.9999 and card_alpha > 1e-4) {
                 const d_shadow = sdRoundedBox(local_x, local_y - blur * 0.25, half_w, half_h, radius);
-                shadow_alpha = (1.0 - smoothstep(-blur * 0.35, blur * 1.15, d_shadow)) * 0.32;
+                shadow_alpha = (1.0 - smoothstep(-blur * 0.35, blur * 1.15, d_shadow)) * 0.32 * card_alpha;
             }
             const shadow_pm = [4]f32{
                 shadow_lin[0] * shadow_alpha,
@@ -882,30 +1326,7 @@ pub fn rasterizeQuad(buf: []u8, phys_w: usize, phys_h: usize, q: core.QuadInstan
                 fg_pm[2] + shadow_pm[2] * inv_fg,
                 fg_pm[3] + shadow_pm[3] * inv_fg,
             };
-
-            const out_a = out_pm[3];
-            if (out_a < 1e-4) continue;
-
-            const out_srgb = core.linearToSrgbColor(.{
-                out_pm[0] / out_a,
-                out_pm[1] / out_a,
-                out_pm[2] / out_a,
-                out_a,
-            });
-
-            const off = (py * phys_w + px) * 4;
-            const dst_srgb = core.Color{
-                @as(f32, @floatFromInt(buf[off + 0])) / 255.0,
-                @as(f32, @floatFromInt(buf[off + 1])) / 255.0,
-                @as(f32, @floatFromInt(buf[off + 2])) / 255.0,
-                @as(f32, @floatFromInt(buf[off + 3])) / 255.0,
-            };
-            const blended = core.blendOverLinear(out_srgb, dst_srgb);
-
-            buf[off + 0] = floatToU8(blended[0]);
-            buf[off + 1] = floatToU8(blended[1]);
-            buf[off + 2] = floatToU8(blended[2]);
-            buf[off + 3] = floatToU8(blended[3]);
+            compositePmPixel(buf, phys_w, px, py, out_pm, round_alpha);
         }
     }
 }

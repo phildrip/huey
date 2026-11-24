@@ -14,12 +14,18 @@ pub const Rect = struct {
 
 pub const Color = [4]f32;
 
+pub const QUAD_MODE_RECT: f32 = 0.0;
+pub const QUAD_MODE_GLYPH: f32 = 1.0;
+pub const QUAD_MODE_ARC: f32 = 2.0;
+pub const QUAD_MODE_SURFACE: f32 = 3.0;
+pub const QUAD_MODE_CAPSULE: f32 = 4.0;
+
 pub const QuadInstance = extern struct {
     pos_size: [4]f32,
     uv_rect: [4]f32 = .{ 0.0, 0.0, 0.0, 0.0 },
     color: [4]f32,
     border_color: [4]f32,
-    params: [4]f32, // [corner_radius, border_width, shadow_blur, mode (0=SDF, 1=glyph)]
+    params: [4]f32, // [corner_radius/angle, border_width/thickness, shadow_or_glow_blur, mode]
     clip_rect: [4]f32 = .{ -1e9, -1e9, 1e9, 1e9 }, // [min_x, min_y, max_x, max_y] in physical pixels
 };
 
@@ -1558,7 +1564,7 @@ pub const LayoutArena = struct {
         return x1 > clip[0] and x0 < clip[2] and y1 > clip[1] and y0 < clip[3];
     }
 
-    fn pushQuad(out_buf: []QuadInstance, count: *usize, quad: QuadInstance, active_clip: [4]f32) void {
+    pub fn pushQuad(out_buf: []QuadInstance, count: *usize, quad: QuadInstance, active_clip: [4]f32) void {
         if (count.* >= out_buf.len) return;
         for (quad.pos_size) |v| {
             if (!std.math.isFinite(v)) return;
@@ -1568,16 +1574,39 @@ pub const LayoutArena = struct {
         var q = quad;
         q.color = sanitizeColor(q.color);
         q.border_color = sanitizeColor(q.border_color);
-        q.params[0] = sanitizeNonNeg(q.params[0]);
+        const mode = if (std.math.isFinite(q.params[3])) q.params[3] else QUAD_MODE_RECT;
+        const is_glyph = (mode >= 0.5 and mode < 1.5);
+        const is_capsule = (mode >= 3.5);
+        q.params[0] = if (is_glyph) sanitizeFinite(q.params[0]) else sanitizeNonNeg(q.params[0]);
         q.params[1] = sanitizeNonNeg(q.params[1]);
         q.params[2] = sanitizeNonNeg(q.params[2]);
-        const is_glyph = q.params[3] > 0.5;
-        const pad: f32 = if (is_glyph) 0.0 else (q.params[2] * 1.5 + 2.0);
+        q.params[3] = mode;
+
+        const hx = q.pos_size[2] * 0.5;
+        const hy = q.pos_size[3] * 0.5;
+        const cx = q.pos_size[0] + hx;
+        const cy = q.pos_size[1] + hy;
+        var ext_hx = hx;
+        var ext_hy = hy;
+        var pad: f32 = if (is_glyph) 0.0 else (q.params[2] * 1.5 + 2.0);
+        if (is_glyph and @abs(q.params[0]) >= 0.0001) {
+            const c = @cos(q.params[0]);
+            const s = @sin(q.params[0]);
+            ext_hx = @abs(c) * hx + @abs(s) * hy;
+            ext_hy = @abs(s) * hx + @abs(c) * hy;
+            pad = 1.0;
+        } else if (is_capsule) {
+            const angle = sanitizeFinite(q.uv_rect[0]);
+            const c = @cos(angle);
+            const s = @sin(angle);
+            ext_hx = @abs(c) * hx + @abs(s) * hy;
+            ext_hy = @abs(s) * hx + @abs(c) * hy;
+        }
         if (!intersectsClip(
-            q.pos_size[0] - pad,
-            q.pos_size[1] - pad,
-            q.pos_size[0] + q.pos_size[2] + pad,
-            q.pos_size[1] + q.pos_size[3] + pad,
+            cx - ext_hx - pad,
+            cy - ext_hy - pad,
+            cx + ext_hx + pad,
+            cy + ext_hy + pad,
             active_clip,
         )) {
             return;

@@ -387,3 +387,194 @@ test "safeRect with extreme chin_dp and ringRadius(inf) clamp to zero" {
     try std.testing.expectEqual(@as(usize, 0), wearos.emitArcDots(100.0, 100.0, 2e38, 0.0, std.math.pi, 1.0, 4.0, 2.0, core.Nord.frost_1, &buf));
     try std.testing.expectEqual(@as(usize, 0), wearos.emitArcDots(100.0, 100.0, 50.0, 0.0, std.math.pi, 1.0, 2e38, 2.0, core.Nord.frost_1, &buf));
 }
+
+test "wearos.emitArcQuad emits 1-quad QUAD_MODE_ARC, enforces bounds, and handles NaN/zero safely" {
+    var quads: [4]core.QuadInstance = undefined;
+    var count: usize = 0;
+    const clip = [4]f32{ 0.0, 0.0, 466.0, 466.0 };
+
+    wearos.emitArcQuad(
+        116.5,
+        116.5,
+        100.0,
+        -std.math.pi * 0.5,
+        std.math.pi,
+        4.0,
+        6.0,
+        2.0,
+        core.Nord.frost_1,
+        clip,
+        &quads,
+        &count,
+    );
+    try std.testing.expectEqual(@as(usize, 1), count);
+    const q = quads[0];
+    try std.testing.expectEqual(core.QUAD_MODE_ARC, q.params[3]);
+    try std.testing.expectApproxEqAbs(@as(f32, 200.0), q.params[0], 0.01);
+    try std.testing.expectApproxEqAbs(@as(f32, 8.0), q.params[1], 0.01);
+    try std.testing.expectApproxEqAbs(@as(f32, 12.0), q.params[2], 0.01);
+    try std.testing.expectApproxEqAbs(@as(f32, -std.math.pi * 0.5), q.uv_rect[0], 0.0001);
+    try std.testing.expectApproxEqAbs(@as(f32, std.math.pi), q.uv_rect[1], 0.0001);
+    // Bounding box centered at (233, 233) with half-extent = 200 + 4 = 204
+    try std.testing.expectApproxEqAbs(@as(f32, 233.0), q.pos_size[0] + q.pos_size[2] * 0.5, 0.01);
+    try std.testing.expectApproxEqAbs(@as(f32, 233.0), q.pos_size[1] + q.pos_size[3] * 0.5, 0.01);
+    try std.testing.expectApproxEqAbs(@as(f32, 408.0), q.pos_size[2], 0.01);
+
+    // Zero thickness, zero sweep, NaN radius, and full buffer do not emit
+    wearos.emitArcQuad(116.5, 116.5, 100.0, 0.0, std.math.pi, 0.0, 0.0, 2.0, core.Nord.frost_1, clip, &quads, &count);
+    wearos.emitArcQuad(116.5, 116.5, 100.0, 0.0, 0.0, 4.0, 0.0, 2.0, core.Nord.frost_1, clip, &quads, &count);
+    wearos.emitArcQuad(116.5, 116.5, std.math.nan(f32), 0.0, std.math.pi, 4.0, 0.0, 2.0, core.Nord.frost_1, clip, &quads, &count);
+    try std.testing.expectEqual(@as(usize, 1), count);
+
+    var zero_buf: [0]core.QuadInstance = undefined;
+    var zero_count: usize = 0;
+    wearos.emitArcQuad(116.5, 116.5, 100.0, 0.0, std.math.pi, 4.0, 0.0, 2.0, core.Nord.frost_1, clip, &zero_buf, &zero_count);
+    try std.testing.expectEqual(@as(usize, 0), zero_count);
+}
+
+test "transformQuadsForAmbient handles QUAD_MODE_SURFACE, QUAD_MODE_ARC, QUAD_MODE_CAPSULE, and negative rotated GLYPH" {
+    var quads = [_]core.QuadInstance{
+        // [0] QUAD_MODE_SURFACE with gradient, specular rim, and glow
+        .{
+            .pos_size = .{ 20.0, 20.0, 120.0, 60.0 },
+            .uv_rect = .{ 0.05, 0.08, 0.12, 0.35 },
+            .color = .{ 0.12, 0.18, 0.23, 1.0 },
+            .border_color = core.Nord.frost_1,
+            .params = .{ 16.0, 2.5, 14.0, core.QUAD_MODE_SURFACE },
+        },
+        // [1] QUAD_MODE_ARC with colored glow
+        .{
+            .pos_size = .{ 10.0, 10.0, 200.0, 200.0 },
+            .uv_rect = .{ -std.math.pi * 0.5, std.math.pi, 0.0, 0.0 },
+            .color = core.Nord.frost_1,
+            .border_color = core.Nord.transparent,
+            .params = .{ 96.0, 6.0, 10.0, core.QUAD_MODE_ARC },
+        },
+        // [2] QUAD_MODE_CAPSULE rotated with glow
+        .{
+            .pos_size = .{ 50.0, 50.0, 40.0, 8.0 },
+            .uv_rect = .{ 0.785, 0.0, 0.0, 0.0 },
+            .color = core.Nord.aurora_green,
+            .border_color = core.Nord.transparent,
+            .params = .{ 4.0, 0.0, 8.0, core.QUAD_MODE_CAPSULE },
+        },
+        // [3] Rotated QUAD_MODE_GLYPH with negative angle_rad
+        .{
+            .pos_size = .{ 80.0, 30.0, 12.0, 16.0 },
+            .uv_rect = .{ 0.1, 0.1, 0.2, 0.2 },
+            .color = core.Nord.snow_storm_2,
+            .border_color = core.Nord.transparent,
+            .params = .{ -0.35, 0.0, 0.0, core.QUAD_MODE_GLYPH },
+        },
+    };
+
+    wearos.transformQuadsForAmbient(&quads, true);
+
+    // Surface -> OLED black fill, 1px monochrome outline, zero glow, zero specular/gradient
+    try std.testing.expectEqual(@as(f32, 0.0), quads[0].color[0]);
+    try std.testing.expectEqual(@as(f32, 0.0), quads[0].color[1]);
+    try std.testing.expectEqual(@as(f32, 0.0), quads[0].color[2]);
+    try std.testing.expectEqual(@as(f32, 1.0), quads[0].params[1]);
+    try std.testing.expectEqual(@as(f32, 0.0), quads[0].params[2]);
+    try std.testing.expectEqual(@as(f32, 0.0), quads[0].uv_rect[3]);
+    try std.testing.expectApproxEqAbs(@as(f32, 0.85), quads[0].border_color[0], 0.001);
+
+    // Arc -> glow stripped, stroke thickness preserved, color converted to visible monochrome
+    try std.testing.expectEqual(@as(f32, 0.0), quads[1].params[2]);
+    try std.testing.expectEqual(@as(f32, 6.0), quads[1].params[1]);
+    try std.testing.expectApproxEqAbs(@as(f32, 0.85), quads[1].color[0], 0.001);
+
+    // Capsule -> glow stripped, angle preserved, foreground color converted to visible monochrome
+    try std.testing.expectEqual(@as(f32, 0.0), quads[2].params[2]);
+    try std.testing.expectApproxEqAbs(@as(f32, 0.785), quads[2].uv_rect[0], 0.0001);
+    try std.testing.expectApproxEqAbs(@as(f32, 0.85), quads[2].color[0], 0.001);
+
+    // Rotated glyph -> negative angle preserved!
+    try std.testing.expectApproxEqAbs(@as(f32, -0.35), quads[3].params[0], 0.0001);
+    try std.testing.expectApproxEqAbs(@as(f32, 0.85), quads[3].color[0], 0.001);
+
+    // Non-low-bit ambient (low_bit=false) + NaN border/angle hygiene
+    const nan = std.math.nan(f32);
+    var smooth_quads = [_]core.QuadInstance{
+        .{
+            .pos_size = .{ 10.0, 10.0, 100.0, 100.0 },
+            .uv_rect = .{ 0.0, std.math.pi, 0.0, 0.0 },
+            .color = core.Nord.frost_1,
+            .border_color = .{ 1.0, 0.0, 0.0, nan },
+            .params = .{ 45.0, 4.0, 8.0, core.QUAD_MODE_ARC },
+        },
+        .{
+            .pos_size = .{ 20.0, 20.0, 80.0, 40.0 },
+            .uv_rect = .{ 0.1, 0.2, 0.3, 0.5 },
+            .color = core.Nord.polar_night_2,
+            .border_color = .{ 0.5, 0.5, 0.5, nan },
+            .params = .{ 10.0, 2.0, 6.0, core.QUAD_MODE_SURFACE },
+        },
+        .{
+            .pos_size = .{ 30.0, 30.0, 40.0, 8.0 },
+            .uv_rect = .{ nan, 0.0, 0.0, 0.0 },
+            .color = core.Nord.aurora_green,
+            .border_color = .{ 1.0, 1.0, 1.0, nan },
+            .params = .{ 4.0, 0.0, 6.0, core.QUAD_MODE_CAPSULE },
+        },
+    };
+    wearos.transformQuadsForAmbient(&smooth_quads, false);
+
+    // ARC: Oklab lightness grayscale, border_color cleaned to transparent
+    try std.testing.expectApproxEqAbs(core.srgbToOklabL(core.Nord.frost_1), smooth_quads[0].color[0], 0.001);
+    try std.testing.expectEqual(core.Nord.transparent, smooth_quads[0].border_color);
+    // SURFACE: pure black fill, 1px outline from orig_fill, zero specular
+    try std.testing.expectEqual(@as(f32, 0.0), smooth_quads[1].color[0]);
+    try std.testing.expectEqual(@as(f32, 1.0), smooth_quads[1].params[1]);
+    try std.testing.expectApproxEqAbs(core.srgbToOklabL(core.Nord.polar_night_2), smooth_quads[1].border_color[0], 0.001);
+    // CAPSULE: NaN angle sanitized to 0, NaN border cleaned to transparent, Oklab lightness color
+    try std.testing.expectEqual(@as(f32, 0.0), smooth_quads[2].uv_rect[0]);
+    try std.testing.expectEqual(core.Nord.transparent, smooth_quads[2].border_color);
+    try std.testing.expectApproxEqAbs(core.srgbToOklabL(core.Nord.aurora_green), smooth_quads[2].color[0], 0.001);
+}
+
+test "applyCurvedEdgeTransform scales ARC/SURFACE/CAPSULE params and preserves GLYPH rotation angle" {
+    var quads = [_]core.QuadInstance{
+        .{
+            .pos_size = .{ 100.0, 380.0, 60.0, 60.0 }, // cy = 410 (off-center near bottom pole)
+            .uv_rect = .{ -std.math.pi * 0.5, std.math.pi, 0.0, 0.0 },
+            .color = core.Nord.frost_1,
+            .border_color = core.Nord.transparent,
+            .params = .{ 25.0, 6.0, 10.0, core.QUAD_MODE_ARC },
+            .clip_rect = .{ 0.0, 0.0, 466.0, 466.0 },
+        },
+        .{
+            .pos_size = .{ 100.0, 380.0, 80.0, 40.0 },
+            .uv_rect = .{ 0.1, 0.1, 0.1, 0.3 },
+            .color = core.Nord.polar_night_1,
+            .border_color = core.Nord.frost_1,
+            .params = .{ 12.0, 2.0, 8.0, core.QUAD_MODE_SURFACE },
+            .clip_rect = .{ 0.0, 0.0, 466.0, 466.0 },
+        },
+        .{
+            .pos_size = .{ 100.0, 396.0, 40.0, 8.0 },
+            .uv_rect = .{ 0.5, 0.0, 0.0, 0.0 },
+            .color = core.Nord.aurora_green,
+            .border_color = core.Nord.transparent,
+            .params = .{ 4.0, 0.0, 6.0, core.QUAD_MODE_CAPSULE },
+            .clip_rect = .{ 0.0, 0.0, 466.0, 466.0 },
+        },
+        .{
+            .pos_size = .{ 100.0, 390.0, 12.0, 16.0 },
+            .uv_rect = .{ 0.1, 0.1, 0.2, 0.2 },
+            .color = core.Nord.snow_storm_2,
+            .border_color = core.Nord.transparent,
+            .params = .{ -0.45, 0.0, 0.0, core.QUAD_MODE_GLYPH },
+            .clip_rect = .{ 0.0, 0.0, 466.0, 466.0 },
+        },
+    };
+    const m_arc = wearos.curvedScrollMetrics(410.0, 233.0, 233.0);
+    const m_cap = wearos.curvedScrollMetrics(400.0, 233.0, 233.0);
+    wearos.applyCurvedEdgeTransform(&quads, 233.0, 233.0, 233.0);
+
+    try std.testing.expectApproxEqAbs(25.0 * m_arc.scale, quads[0].params[0], 0.01);
+    try std.testing.expectApproxEqAbs(6.0 * m_arc.scale, quads[0].params[1], 0.01);
+    try std.testing.expectApproxEqAbs(12.0 * m_cap.scale, quads[1].params[0], 0.01);
+    try std.testing.expectApproxEqAbs(4.0 * m_cap.scale, quads[2].params[0], 0.01);
+    try std.testing.expectApproxEqAbs(@as(f32, -0.45), quads[3].params[0], 0.0001);
+}

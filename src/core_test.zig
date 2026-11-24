@@ -1,5 +1,6 @@
 const std = @import("std");
 const core = @import("core.zig");
+const renderer = @import("renderer.zig");
 
 test "QuadInstance is 96-byte ABI aligned for UberQuad shader" {
     try std.testing.expectEqual(@as(usize, 96), @sizeOf(core.QuadInstance));
@@ -312,4 +313,50 @@ test "narrow toggle and slider sub-elements stay within widget rect bounds" {
         try std.testing.expect(q.pos_size[0] >= min_x);
         try std.testing.expect(q.pos_size[0] + q.pos_size[2] <= max_x);
     }
+}
+
+test "QUAD_MODE_* constants match UberQuad mode contract and keep 96-byte QuadInstance ABI" {
+    try std.testing.expectEqual(@as(usize, 96), @sizeOf(core.QuadInstance));
+    try std.testing.expectEqual(@as(f32, 0.0), core.QUAD_MODE_RECT);
+    try std.testing.expectEqual(@as(f32, 1.0), core.QUAD_MODE_GLYPH);
+    try std.testing.expectEqual(@as(f32, 2.0), core.QUAD_MODE_ARC);
+    try std.testing.expectEqual(@as(f32, 3.0), core.QUAD_MODE_SURFACE);
+    try std.testing.expectEqual(@as(f32, 4.0), core.QUAD_MODE_CAPSULE);
+
+    // Ensure renderer.zig typechecks under zig build test (pure state methods)
+    var r = renderer.Renderer{};
+    r.setRoundClip(100.0, 100.0, 50.0);
+    try std.testing.expectEqual(@as(f32, 1.0), r.u_round_clip[3]);
+    r.clearRoundClip();
+    try std.testing.expectEqual(@as(f32, 0.0), r.u_round_clip[3]);
+}
+
+test "LayoutArena.pushQuad preserves rotated glyph/capsule bounds across clip boundaries and keeps negative glyph angle" {
+    var quads: [8]core.QuadInstance = undefined;
+    var count: usize = 0;
+
+    // 40x8 horizontal capsule centered at (50, 50), rotated 90 deg -> vertical extents [46..54] x [30..70].
+    // Clip rect is below the unrotated box (y in [58, 80]), so only the rotated extent intersects!
+    const clip_below = [4]f32{ 0.0, 58.0, 100.0, 80.0 };
+    core.LayoutArena.pushQuad(&quads, &count, .{
+        .pos_size = .{ 30.0, 46.0, 40.0, 8.0 },
+        .uv_rect = .{ std.math.pi * 0.5, 0.0, 0.0, 0.0 },
+        .color = core.Nord.frost_1,
+        .border_color = core.Nord.transparent,
+        .params = .{ 4.0, 0.0, 0.0, core.QUAD_MODE_CAPSULE },
+    }, clip_below);
+    try std.testing.expectEqual(@as(usize, 1), count);
+
+    // Rotated glyph (10x40 centered at (50,50), rotated -pi/2 -> horizontal extent [30..70] x [45..55])
+    // Clip rect is to the right of unrotated box (x in [60, 80]), so only rotated extent intersects; negative angle preserved!
+    const clip_right = [4]f32{ 60.0, 0.0, 80.0, 100.0 };
+    core.LayoutArena.pushQuad(&quads, &count, .{
+        .pos_size = .{ 45.0, 30.0, 10.0, 40.0 },
+        .uv_rect = .{ 0.1, 0.1, 0.2, 0.2 },
+        .color = core.Nord.snow_storm_2,
+        .border_color = core.Nord.transparent,
+        .params = .{ -std.math.pi * 0.5, 0.0, 0.0, core.QUAD_MODE_GLYPH },
+    }, clip_right);
+    try std.testing.expectEqual(@as(usize, 2), count);
+    try std.testing.expectApproxEqAbs(@as(f32, -std.math.pi * 0.5), quads[1].params[0], 0.0001);
 }

@@ -1,6 +1,8 @@
 const std = @import("std");
 const core = @import("core.zig");
 const glyph_atlas = @import("glyph_atlas.zig");
+const headless = @import("headless.zig");
+const wearos = @import("wearos.zig");
 
 const HOST_FONT_PATH = "/usr/share/fonts/truetype/dejavu/DejaVuSans.ttf";
 
@@ -336,4 +338,227 @@ test "emitTextQuadsClipped skips off-clip leading glyphs without starving tiny o
     }
     // Only 'a' and 'b' should have been rasterized into the atlas (not 'X', 'Y', 'Z')
     try std.testing.expectEqual(@as(usize, 2), atlas.entries.count());
+}
+
+test "Headless rasterizer: rotated QUAD_MODE_GLYPH renders cleanly without corner clipping" {
+    const font_bytes = try loadHostFont(std.testing.allocator);
+    defer std.testing.allocator.free(font_bytes);
+
+    var atlas = try glyph_atlas.GlyphAtlas.init(std.testing.allocator, font_bytes, 256, 256);
+    defer atlas.deinit();
+
+    var unrot: [4]core.QuadInstance = undefined;
+    const n = atlas.emitTextQuads("L", 40.0, 40.0, 24.0, 1.0, core.Nord.snow_storm_2, &unrot, 1);
+    try std.testing.expectEqual(@as(usize, 1), n);
+
+    // Center glyph 'L' at (60, 60) and rotate +pi/2 (90 deg CW) vs -pi/2 (90 deg CCW)
+    var rot_cw = unrot[0];
+    rot_cw.pos_size[0] = 60.0 - rot_cw.pos_size[2] * 0.5;
+    rot_cw.pos_size[1] = 60.0 - rot_cw.pos_size[3] * 0.5;
+    rot_cw.params[0] = std.math.pi * 0.5;
+
+    var rot_ccw = rot_cw;
+    rot_ccw.params[0] = -std.math.pi * 0.5;
+
+    const view = headless.AtlasView{
+        .pixels = atlas.pixels,
+        .width = atlas.width,
+        .height = atlas.height,
+    };
+    const black = core.Color{ 0.0, 0.0, 0.0, 1.0 };
+    const no_round_clip = [4]f32{ 0.0, 0.0, 0.0, 0.0 };
+
+    var unrot_q = rot_cw;
+    unrot_q.params[0] = 0.0;
+
+    const img_unrot = try headless.renderQuadsToRgba(std.testing.allocator, 120, 120, &[_]core.QuadInstance{unrot_q}, black, no_round_clip, view);
+    defer std.testing.allocator.free(img_unrot);
+    const img_cw = try headless.renderQuadsToRgba(std.testing.allocator, 120, 120, &[_]core.QuadInstance{rot_cw}, black, no_round_clip, view);
+    defer std.testing.allocator.free(img_cw);
+    const img_ccw = try headless.renderQuadsToRgba(std.testing.allocator, 120, 120, &[_]core.QuadInstance{rot_ccw}, black, no_round_clip, view);
+    defer std.testing.allocator.free(img_ccw);
+
+    // For 'L' rotated +pi/2 CW, the vertical stem rotates to TOP and bottom foot rotates to LEFT ('Γ' shape):
+    // top-left quadrant is denser than bottom-right, whereas -pi/2 CCW puts stem at BOTTOM and foot at RIGHT!
+    var cw_top_left: usize = 0;
+    var cw_bot_right: usize = 0;
+    var ccw_top_left: usize = 0;
+    var ccw_bot_right: usize = 0;
+    for (0..60) |y| {
+        for (0..60) |x| {
+            if (img_cw[(y * 120 + x) * 4 + 0] > 30) cw_top_left += 1;
+            if (img_ccw[(y * 120 + x) * 4 + 0] > 30) ccw_top_left += 1;
+        }
+    }
+    for (60..120) |y| {
+        for (60..120) |x| {
+            if (img_cw[(y * 120 + x) * 4 + 0] > 30) cw_bot_right += 1;
+            if (img_ccw[(y * 120 + x) * 4 + 0] > 30) ccw_bot_right += 1;
+        }
+    }
+    try std.testing.expect(cw_top_left > cw_bot_right);
+    try std.testing.expect(ccw_bot_right > ccw_top_left);
+    try std.testing.expect(headless.diffRgba(img_unrot, img_cw, 10).mismatched_pixels > 20);
+    try std.testing.expect(headless.diffRgba(img_cw, img_ccw, 10).mismatched_pixels > 20);
+
+    // Round clip also masks rotated glyph when placed outside circle
+    const rc_tight = [4]f32{ 20.0, 20.0, 10.0, 1.0 };
+    const img_rc_glyph = try headless.renderQuadsToRgba(std.testing.allocator, 120, 120, &[_]core.QuadInstance{rot_cw}, black, rc_tight, view);
+    defer std.testing.allocator.free(img_rc_glyph);
+    var lit_rc: usize = 0;
+    for (0..120 * 120) |i| {
+        if (img_rc_glyph[i * 4 + 0] > 0) lit_rc += 1;
+    }
+    try std.testing.expectEqual(@as(usize, 0), lit_rc);
+}
+
+test "wearos.emitCurvedText emits tangential top_arc and bottom_arc glyph quads with bounds and NaN safety" {
+    const font_bytes = try loadHostFont(std.testing.allocator);
+    defer std.testing.allocator.free(font_bytes);
+
+    var atlas = try glyph_atlas.GlyphAtlas.init(std.testing.allocator, font_bytes, 512, 512);
+    defer atlas.deinit();
+
+    const clip = [4]f32{ 0.0, 0.0, 466.0, 466.0 };
+    var top_quads: [64]core.QuadInstance = undefined;
+    var top_count: usize = 0;
+
+    // Top arc centered at 12 o'clock (-pi/2)
+    wearos.emitCurvedText(
+        &atlas,
+        "MODEL",
+        116.5,
+        116.5,
+        96.0,
+        -std.math.pi * 0.5,
+        14.0,
+        2.0,
+        core.Nord.snow_storm_2,
+        clip,
+        true,
+        1.5,
+        &top_quads,
+        &top_count,
+        1,
+    );
+    try std.testing.expectEqual(@as(usize, 5), top_count);
+    for (top_quads[0..top_count]) |q| {
+        try std.testing.expectEqual(core.QUAD_MODE_GLYPH, q.params[3]);
+        const q_cy = q.pos_size[1] + q.pos_size[3] * 0.5;
+        try std.testing.expect(q_cy < 233.0); // top half
+    }
+    // Left-to-right order along top rim: X increases monotonically, angle increases from negative to positive
+    try std.testing.expect(top_quads[0].pos_size[0] < top_quads[4].pos_size[0]);
+    try std.testing.expect(top_quads[0].params[0] < 0.0);
+    try std.testing.expect(top_quads[4].params[0] > 0.0);
+
+    // Bottom arc centered at 6 o'clock (+pi/2): upright left-to-right!
+    var bot_quads: [64]core.QuadInstance = undefined;
+    var bot_count: usize = 0;
+    wearos.emitCurvedText(
+        &atlas,
+        "READY",
+        116.5,
+        116.5,
+        96.0,
+        std.math.pi * 0.5,
+        14.0,
+        2.0,
+        core.Nord.frost_1,
+        clip,
+        false,
+        1.5,
+        &bot_quads,
+        &bot_count,
+        1,
+    );
+    try std.testing.expectEqual(@as(usize, 5), bot_count);
+    for (bot_quads[0..bot_count]) |q| {
+        try std.testing.expectEqual(core.QUAD_MODE_GLYPH, q.params[3]);
+        const q_cy = q.pos_size[1] + q.pos_size[3] * 0.5;
+        try std.testing.expect(q_cy > 233.0); // bottom half
+    }
+    // Left-to-right upright along bottom rim: X increases, left char tilts clockwise (+), right char tilts CCW (-)
+    try std.testing.expect(bot_quads[0].pos_size[0] < bot_quads[4].pos_size[0]);
+    try std.testing.expect(bot_quads[0].params[0] > 0.0);
+    try std.testing.expect(bot_quads[4].params[0] < 0.0);
+
+    // Rasterize both top_quads and bot_quads via headless to verify pixels appear in top & bottom halves
+    const view = headless.AtlasView{
+        .pixels = atlas.pixels,
+        .width = atlas.width,
+        .height = atlas.height,
+    };
+    const img_top = try headless.renderQuadsToRgba(std.testing.allocator, 466, 466, top_quads[0..top_count], .{ 0, 0, 0, 1 }, .{ 0, 0, 0, 0 }, view);
+    defer std.testing.allocator.free(img_top);
+    var lit_upper: usize = 0;
+    for (0..233) |y| {
+        for (0..466) |x| {
+            if (img_top[(y * 466 + x) * 4 + 0] > 30) lit_upper += 1;
+        }
+    }
+    try std.testing.expect(lit_upper > 80);
+
+    const img_bot = try headless.renderQuadsToRgba(std.testing.allocator, 466, 466, bot_quads[0..bot_count], .{ 0, 0, 0, 1 }, .{ 0, 0, 0, 0 }, view);
+    defer std.testing.allocator.free(img_bot);
+    var lit_lower: usize = 0;
+    for (233..466) |y| {
+        for (0..466) |x| {
+            if (img_bot[(y * 466 + x) * 4 + 2] > 30) lit_lower += 1;
+        }
+    }
+    try std.testing.expect(lit_lower > 80);
+
+    // center_angle_rad at +pi and -pi (9 o'clock left bezel) emits symmetric left-rim quads
+    var left_pos_buf: [16]core.QuadInstance = undefined;
+    var left_pos_cnt: usize = 0;
+    wearos.emitCurvedText(&atlas, "HI", 116.5, 116.5, 96.0, std.math.pi, 14.0, 2.0, core.Nord.snow_storm_2, clip, true, 0.0, &left_pos_buf, &left_pos_cnt, 1);
+    var left_neg_buf: [16]core.QuadInstance = undefined;
+    var left_neg_cnt: usize = 0;
+    wearos.emitCurvedText(&atlas, "HI", 116.5, 116.5, 96.0, -std.math.pi, 14.0, 2.0, core.Nord.snow_storm_2, clip, true, 0.0, &left_neg_buf, &left_neg_cnt, 1);
+    try std.testing.expectEqual(@as(usize, 2), left_pos_cnt);
+    try std.testing.expectEqual(@as(usize, 2), left_neg_cnt);
+    try std.testing.expectApproxEqAbs(left_pos_buf[0].pos_size[0], left_neg_buf[0].pos_size[0], 0.01);
+    try std.testing.expectApproxEqAbs(left_pos_buf[0].pos_size[1], left_neg_buf[0].pos_size[1], 0.01);
+
+    // Empty text, NaN radius, and tight buffer bounds safety
+    var empty_count: usize = 0;
+    wearos.emitCurvedText(&atlas, "", 116.5, 116.5, 96.0, -std.math.pi * 0.5, 14.0, 2.0, core.Nord.snow_storm_2, clip, true, 0.0, &top_quads, &empty_count, 1);
+    wearos.emitCurvedText(&atlas, "OK", 116.5, 116.5, std.math.nan(f32), -std.math.pi * 0.5, 14.0, 2.0, core.Nord.snow_storm_2, clip, true, 0.0, &top_quads, &empty_count, 1);
+    try std.testing.expectEqual(@as(usize, 0), empty_count);
+
+    var tiny_buf: [2]core.QuadInstance = undefined;
+    var tiny_count: usize = 0;
+    wearos.emitCurvedText(&atlas, "ABCDE", 116.5, 116.5, 96.0, -std.math.pi * 0.5, 14.0, 2.0, core.Nord.snow_storm_2, clip, true, 0.0, &tiny_buf, &tiny_count, 1);
+    try std.testing.expectEqual(@as(usize, 2), tiny_count);
+
+    // String with space ("MODEL 3") skips empty space quad while preserving advance gap
+    var spaced_buf: [16]core.QuadInstance = undefined;
+    var spaced_count: usize = 0;
+    wearos.emitCurvedText(&atlas, "MODEL 3", 116.5, 116.5, 96.0, -std.math.pi * 0.5, 14.0, 2.0, core.Nord.snow_storm_2, clip, true, 0.0, &spaced_buf, &spaced_count, 1);
+    try std.testing.expectEqual(@as(usize, 6), spaced_count);
+    try std.testing.expect(spaced_buf[5].pos_size[0] > spaced_buf[4].pos_size[0] + spaced_buf[4].pos_size[2]);
+
+    // Pre-filled 64x64 atlas evicts old frame_idx=1 glyphs mid-string and repacks frame_idx=7 glyphs cleanly
+    var small_atlas = try glyph_atlas.GlyphAtlas.init(std.testing.allocator, font_bytes, 64, 64);
+    defer small_atlas.deinit();
+    for ("MNOPQRSTUVWXYZ0123456789") |ch| {
+        _ = try small_atlas.getOrRasterize(ch, 18.0, 1.0, 1);
+    }
+    const epoch_start = small_atlas.repack_epoch;
+
+    var repack_buf: [16]core.QuadInstance = undefined;
+    var repack_count: usize = 0;
+    wearos.emitCurvedText(&small_atlas, "ABCDEFGH", 116.5, 116.5, 96.0, -std.math.pi * 0.5, 18.0, 1.0, core.Nord.snow_storm_2, clip, true, 0.0, &repack_buf, &repack_count, 7);
+    try std.testing.expect(small_atlas.repack_epoch > epoch_start);
+    try std.testing.expectEqual(@as(usize, 8), repack_count);
+    const epoch_after = small_atlas.repack_epoch;
+    for ("ABCDEFGH", 0..) |ch, idx| {
+        const expected = try small_atlas.getOrRasterize(ch, 18.0, 1.0, 7);
+        try std.testing.expectEqual(epoch_after, small_atlas.repack_epoch);
+        try std.testing.expectApproxEqAbs(expected.u0, repack_buf[idx].uv_rect[0], 1e-6);
+        try std.testing.expectApproxEqAbs(expected.v0, repack_buf[idx].uv_rect[1], 1e-6);
+        try std.testing.expectApproxEqAbs(expected.u1, repack_buf[idx].uv_rect[2], 1e-6);
+        try std.testing.expectApproxEqAbs(expected.v1, repack_buf[idx].uv_rect[3], 1e-6);
+    }
 }

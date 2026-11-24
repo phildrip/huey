@@ -186,16 +186,42 @@ fn pushQuad(out_buf: []core.QuadInstance, count: *usize, quad: core.QuadInstance
     var q = quad;
     q.color = core.sanitizeColor(q.color);
     q.border_color = core.sanitizeColor(q.border_color);
-    q.params[0] = sanitizeNonNeg(q.params[0]);
+    const mode = if (std.math.isFinite(q.params[3])) q.params[3] else core.QUAD_MODE_RECT;
+    const is_glyph = (mode >= 0.5 and mode < 1.5);
+    const is_capsule = (mode >= 3.5);
+    q.params[0] = if (is_glyph)
+        (if (std.math.isFinite(q.params[0])) q.params[0] else 0.0)
+    else
+        sanitizeNonNeg(q.params[0]);
     q.params[1] = sanitizeNonNeg(q.params[1]);
     q.params[2] = sanitizeNonNeg(q.params[2]);
-    const is_glyph = q.params[3] > 0.5;
-    const pad: f32 = if (is_glyph) 0.0 else (q.params[2] * 1.5 + 2.0);
+    q.params[3] = mode;
+
+    const hx = q.pos_size[2] * 0.5;
+    const hy = q.pos_size[3] * 0.5;
+    const cx = q.pos_size[0] + hx;
+    const cy = q.pos_size[1] + hy;
+    var ext_hx = hx;
+    var ext_hy = hy;
+    var pad: f32 = if (is_glyph) 0.0 else (q.params[2] * 1.5 + 2.0);
+    if (is_glyph and @abs(q.params[0]) >= 0.0001) {
+        const c = @cos(q.params[0]);
+        const s = @sin(q.params[0]);
+        ext_hx = @abs(c) * hx + @abs(s) * hy;
+        ext_hy = @abs(s) * hx + @abs(c) * hy;
+        pad = 1.0;
+    } else if (is_capsule) {
+        const angle = if (std.math.isFinite(q.uv_rect[0])) q.uv_rect[0] else 0.0;
+        const c = @cos(angle);
+        const s = @sin(angle);
+        ext_hx = @abs(c) * hx + @abs(s) * hy;
+        ext_hy = @abs(s) * hx + @abs(c) * hy;
+    }
     if (!intersectsClip(
-        q.pos_size[0] - pad,
-        q.pos_size[1] - pad,
-        q.pos_size[0] + q.pos_size[2] + pad,
-        q.pos_size[1] + q.pos_size[3] + pad,
+        cx - ext_hx - pad,
+        cy - ext_hy - pad,
+        cx + ext_hx + pad,
+        cy + ext_hy + pad,
         active_clip,
     )) {
         return;

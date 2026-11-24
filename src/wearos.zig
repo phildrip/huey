@@ -1,7 +1,13 @@
 const std = @import("std");
 const core = @import("core.zig");
+const glyph_atlas = @import("glyph_atlas.zig");
 
 pub const AMBIENT_FG_SDF_MODE: f32 = 0.25;
+
+fn sanitizeFinite(v: f32) f32 {
+    if (!std.math.isFinite(v)) return 0.0;
+    return v;
+}
 
 fn sanitizeNonNeg(v: f32) f32 {
     if (!std.math.isFinite(v) or v < 0.0) return 0.0;
@@ -11,6 +17,11 @@ fn sanitizeNonNeg(v: f32) f32 {
 fn sanitizeUnit(v: f32) f32 {
     if (!std.math.isFinite(v)) return 0.0;
     return std.math.clamp(v, 0.0, 1.0);
+}
+
+fn allFinite4(v: [4]f32) bool {
+    return std.math.isFinite(v[0]) and std.math.isFinite(v[1]) and
+        std.math.isFinite(v[2]) and std.math.isFinite(v[3]);
 }
 
 pub const RingPoint = struct {
@@ -185,6 +196,218 @@ pub fn emitArcDots(
     return count;
 }
 
+/// Emits a 1-quad anti-aliased SDF circular arc (`QUAD_MODE_ARC`) with round caps and optional colored glow.
+pub fn emitArcQuad(
+    cx: f32,
+    cy: f32,
+    radius: f32,
+    start_angle_rad: f32,
+    sweep_angle_rad: f32,
+    thickness_dp: f32,
+    glow_blur_dp: f32,
+    scale: f32,
+    color: core.Color,
+    clip_rect: [4]f32,
+    out_quads: []core.QuadInstance,
+    count: *usize,
+) void {
+    if (count.* >= out_quads.len) return;
+    if (!std.math.isFinite(cx) or !std.math.isFinite(cy) or
+        !std.math.isFinite(radius) or !std.math.isFinite(start_angle_rad) or
+        !std.math.isFinite(sweep_angle_rad) or !std.math.isFinite(thickness_dp) or
+        !std.math.isFinite(glow_blur_dp) or !std.math.isFinite(scale))
+    {
+        return;
+    }
+    if (!allFinite4(clip_rect) or !(clip_rect[2] > clip_rect[0] and clip_rect[3] > clip_rect[1])) {
+        return;
+    }
+    if (scale <= 0.0 or radius <= 0.0 or thickness_dp <= 0.0 or sweep_angle_rad <= 0.0) {
+        return;
+    }
+
+    const safe_col = core.sanitizeColor(color);
+    if (safe_col[3] <= 0.0) return;
+
+    const r_px = radius * scale;
+    const thick_px = thickness_dp * scale;
+    const glow_px = sanitizeNonNeg(glow_blur_dp) * scale;
+    const cx_px = cx * scale;
+    const cy_px = cy * scale;
+    const half_ext = r_px + thick_px * 0.5;
+    const box_w = half_ext * 2.0;
+    const box_x = cx_px - half_ext;
+    const box_y = cy_px - half_ext;
+    const pad = glow_px * 1.5 + 2.0;
+    if (!std.math.isFinite(r_px) or !std.math.isFinite(thick_px) or
+        !std.math.isFinite(glow_px) or !std.math.isFinite(half_ext) or
+        !std.math.isFinite(box_x) or !std.math.isFinite(box_y) or
+        !std.math.isFinite(box_w) or !std.math.isFinite(pad))
+    {
+        return;
+    }
+
+    if (!(box_x + box_w + pad > clip_rect[0] and box_x - pad < clip_rect[2] and
+        box_y + box_w + pad > clip_rect[1] and box_y - pad < clip_rect[3]))
+    {
+        return;
+    }
+
+    const sweep = std.math.clamp(sweep_angle_rad, 0.0, std.math.tau);
+    out_quads[count.*] = .{
+        .pos_size = .{ box_x, box_y, box_w, box_w },
+        .uv_rect = .{ start_angle_rad, sweep, 0.0, 0.0 },
+        .color = safe_col,
+        .border_color = core.Nord.transparent,
+        .params = .{ r_px, thick_px, glow_px, core.QUAD_MODE_ARC },
+        .clip_rect = clip_rect,
+    };
+    count.* += 1;
+}
+
+/// Emits rotated `QUAD_MODE_GLYPH` quads positioned tangentially along a circular bezel arc.
+/// When `top_arc` is `true`, text reads left-to-right along the top rim; when `false`, reads
+/// left-to-right upright along the bottom rim.
+pub fn emitCurvedText(
+    atlas: *glyph_atlas.GlyphAtlas,
+    text: []const u8,
+    cx: f32,
+    cy: f32,
+    radius: f32,
+    center_angle_rad: f32,
+    font_size: f32,
+    scale: f32,
+    color: core.Color,
+    clip_rect: [4]f32,
+    top_arc: bool,
+    tracking_px: f32,
+    out_quads: []core.QuadInstance,
+    count: *usize,
+    frame_idx: u64,
+) void {
+    if (text.len == 0 or count.* >= out_quads.len) return;
+    if (!std.math.isFinite(cx) or !std.math.isFinite(cy) or
+        !std.math.isFinite(radius) or !std.math.isFinite(center_angle_rad) or
+        !std.math.isFinite(font_size) or !std.math.isFinite(scale) or
+        !std.math.isFinite(tracking_px))
+    {
+        return;
+    }
+    if (!allFinite4(clip_rect) or !(clip_rect[2] > clip_rect[0] and clip_rect[3] > clip_rect[1])) {
+        return;
+    }
+    if (radius <= 0.0 or font_size <= 0.0 or scale <= 0.0) return;
+
+    const safe_col = core.sanitizeColor(color);
+    if (safe_col[3] <= 0.0) return;
+
+    const r_px = radius * scale;
+    const cx_px = cx * scale;
+    const cy_px = cy * scale;
+    if (!std.math.isFinite(r_px) or r_px <= 0.0 or
+        !std.math.isFinite(cx_px) or !std.math.isFinite(cy_px))
+    {
+        return;
+    }
+
+    const vm = atlas.vMetricsPx(font_size, scale);
+    const cap_mid_from_baseline = -(vm.ascent + vm.descent) * 0.5;
+
+    var total_w_px: f32 = 0.0;
+    var prev_cp_m: ?u21 = null;
+    var idx_m: usize = 0;
+    while (idx_m < text.len) {
+        const cp = glyph_atlas.GlyphAtlas.decodeNextCodepoint(text, &idx_m);
+        if (prev_cp_m) |p| {
+            total_w_px += atlas.kernAdvancePx(p, cp, vm.stb_scale);
+        }
+        total_w_px += atlas.codepointAdvancePx(cp, vm.stb_scale);
+        if (idx_m < text.len) {
+            total_w_px += tracking_px;
+        }
+        prev_cp_m = cp;
+    }
+    if (!std.math.isFinite(total_w_px) or total_w_px <= 0.0) return;
+
+    const total_arc = total_w_px / r_px;
+    const start_theta = if (top_arc)
+        center_angle_rad - total_arc * 0.5
+    else
+        center_angle_rad + total_arc * 0.5;
+
+    const start_count = count.*;
+    var epoch_before = atlas.repack_epoch;
+    var retried = false;
+
+    while (true) {
+        count.* = start_count;
+        var pen_x_px: f32 = 0.0;
+        var prev_cp: ?u21 = null;
+        var idx: usize = 0;
+        while (idx < text.len and count.* < out_quads.len) {
+            const cp = glyph_atlas.GlyphAtlas.decodeNextCodepoint(text, &idx);
+            if (prev_cp) |p| {
+                pen_x_px += atlas.kernAdvancePx(p, cp, vm.stb_scale);
+            }
+
+            const g = atlas.getOrRasterize(cp, font_size, scale, frame_idx) catch {
+                pen_x_px += atlas.codepointAdvancePx(cp, vm.stb_scale);
+                if (idx < text.len) pen_x_px += tracking_px;
+                prev_cp = cp;
+                continue;
+            };
+
+            if (g.w > 0.0 and g.h > 0.0) {
+                const glyph_arc_pos = pen_x_px + g.x_off + g.w * 0.5;
+                const theta = if (top_arc)
+                    start_theta + glyph_arc_pos / r_px
+                else
+                    start_theta - glyph_arc_pos / r_px;
+                const dy_from_mid = (g.y_off + g.h * 0.5) - cap_mid_from_baseline;
+                const eff_r = if (top_arc) r_px - dy_from_mid else r_px + dy_from_mid;
+                const raw_angle = if (top_arc) theta + std.math.pi * 0.5 else theta - std.math.pi * 0.5;
+                const angle_rad = std.math.atan2(@sin(raw_angle), @cos(raw_angle));
+
+                const gx_center = cx_px + eff_r * @cos(theta);
+                const gy_center = cy_px + eff_r * @sin(theta);
+
+                const cg = @cos(angle_rad);
+                const sg = @sin(angle_rad);
+                const hx = g.w * 0.5;
+                const hy = g.h * 0.5;
+                const rot_hx = @abs(cg) * hx + @abs(sg) * hy + 1.0;
+                const rot_hy = @abs(sg) * hx + @abs(cg) * hy + 1.0;
+
+                if (gx_center + rot_hx > clip_rect[0] and gx_center - rot_hx < clip_rect[2] and
+                    gy_center + rot_hy > clip_rect[1] and gy_center - rot_hy < clip_rect[3])
+                {
+                    out_quads[count.*] = .{
+                        .pos_size = .{ gx_center - hx, gy_center - hy, g.w, g.h },
+                        .uv_rect = .{ g.u0, g.v0, g.u1, g.v1 },
+                        .color = safe_col,
+                        .border_color = core.Nord.transparent,
+                        .params = .{ angle_rad, 0.0, 0.0, core.QUAD_MODE_GLYPH },
+                        .clip_rect = clip_rect,
+                    };
+                    count.* += 1;
+                }
+            }
+
+            pen_x_px += g.advance;
+            if (idx < text.len) {
+                pen_x_px += tracking_px;
+            }
+            prev_cp = cp;
+        }
+        if (!retried and atlas.repack_epoch != epoch_before) {
+            retried = true;
+            epoch_before = atlas.repack_epoch;
+            continue;
+        }
+        break;
+    }
+}
+
 pub const CurvedMetrics = struct {
     scale: f32,
     alpha: f32,
@@ -250,7 +473,8 @@ fn applyCurvedQuadWithClipRadius(
     q.pos_size[2] = @floatCast(std.math.clamp(new_w_f64, 0.0, max_f32));
     q.pos_size[3] = @floatCast(std.math.clamp(new_h_f64, 0.0, max_f32));
 
-    if (std.math.isFinite(q.params[3]) and q.params[3] <= 0.5) {
+    const mode = if (std.math.isFinite(q.params[3])) q.params[3] else core.QUAD_MODE_RECT;
+    if (mode < 0.5 or mode >= 1.5) {
         q.params[0] = @floatCast(std.math.clamp(@as(f64, sanitizeNonNeg(q.params[0])) * s, 0.0, max_f32));
         q.params[1] = @floatCast(std.math.clamp(@as(f64, sanitizeNonNeg(q.params[1])) * s, 0.0, max_f32));
         q.params[2] = @floatCast(std.math.clamp(@as(f64, sanitizeNonNeg(q.params[2])) * s, 0.0, max_f32));
@@ -580,19 +804,71 @@ fn isForegroundSdfIndicator(q: *const core.QuadInstance) bool {
 /// In-place zero-alloc pass converting an emitted QuadInstance buffer for Wear OS ambient mode.
 pub fn transformQuadsForAmbient(quads: []core.QuadInstance, low_bit: bool) void {
     for (quads) |*q| {
-        q.params[0] = sanitizeNonNeg(q.params[0]);
-        q.params[1] = sanitizeNonNeg(q.params[1]);
-        q.params[2] = 0.0; // Strip shadow blur for OLED power & burn-in protection
+        const mode = if (std.math.isFinite(q.params[3])) q.params[3] else core.QUAD_MODE_RECT;
+        q.params[2] = 0.0; // Strip shadow/glow blur for OLED power & burn-in protection
 
-        const is_glyph = q.params[3] > 0.5;
-        if (is_glyph) {
+        if (mode >= 0.5 and mode < 1.5) {
+            // QUAD_MODE_GLYPH: preserve signed rotation angle in params[0]
+            q.params[0] = sanitizeFinite(q.params[0]);
+            q.params[1] = sanitizeNonNeg(q.params[1]);
             q.color = ambientVisibleFg(q.color, low_bit);
             continue;
         }
 
+        q.params[0] = sanitizeNonNeg(q.params[0]);
+        q.params[1] = sanitizeNonNeg(q.params[1]);
+
         const orig_fill = q.color;
         const has_fill = std.math.isFinite(orig_fill[3]) and orig_fill[3] > 0.0;
         const has_border = std.math.isFinite(q.border_color[3]) and q.border_color[3] > 0.0;
+
+        if (mode >= 1.5 and mode < 2.5) {
+            // QUAD_MODE_ARC: preserve visible outline stroke in ambient
+            q.color = if (has_fill) ambientVisibleFg(orig_fill, low_bit) else core.Nord.transparent;
+            q.border_color = core.Nord.transparent;
+            continue;
+        }
+
+        if (mode >= 3.5) {
+            // QUAD_MODE_CAPSULE: preserve foreground stroke in ambient
+            q.uv_rect[0] = sanitizeFinite(q.uv_rect[0]);
+            q.color = if (has_fill) ambientVisibleFg(orig_fill, low_bit) else core.Nord.transparent;
+            if (has_border) {
+                q.border_color = ambientVisibleFg(q.border_color, low_bit);
+                if (q.params[1] > 1.0) {
+                    q.params[1] = 1.0;
+                }
+            } else {
+                q.border_color = core.Nord.transparent;
+            }
+            continue;
+        }
+
+        if (mode >= 2.5 and mode < 3.5) {
+            // QUAD_MODE_SURFACE: strip gradient/specular rim, blacken fill + 1px outline
+            q.uv_rect = .{ 0.0, 0.0, 0.0, 0.0 };
+            if (has_fill) {
+                q.color = ambientTransformColor(orig_fill, true, low_bit);
+                q.params[1] = 1.0;
+                const outline_src = if (has_border) q.border_color else orig_fill;
+                var outline = ambientVisibleFg(outline_src, low_bit);
+                if (!has_border) {
+                    outline[3] = sanitizeUnit(orig_fill[3]);
+                }
+                q.border_color = outline;
+            } else {
+                q.color = core.Nord.transparent;
+                if (has_border) {
+                    q.border_color = ambientVisibleFg(q.border_color, low_bit);
+                    if (q.params[1] > 1.0) {
+                        q.params[1] = 1.0;
+                    }
+                } else {
+                    q.border_color = core.Nord.transparent;
+                }
+            }
+            continue;
+        }
 
         if (isForegroundSdfIndicator(q)) {
             if (has_fill) {

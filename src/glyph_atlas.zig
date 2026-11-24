@@ -498,6 +498,42 @@ pub const GlyphAtlas = struct {
         );
     }
 
+    pub const FontVMetricsPx = struct {
+        ascent: f32,
+        descent: f32,
+        stb_scale: f32,
+    };
+
+    pub fn decodeNextCodepoint(bytes: []const u8, index: *usize) u21 {
+        return nextUtf8Codepoint(bytes, index);
+    }
+
+    pub fn vMetricsPx(self: *const GlyphAtlas, font_size_logical: f32, scale: f32) FontVMetricsPx {
+        const q = quantizeSizePx(font_size_logical, scale);
+        const stb_scale_px = huey_stbtt_scale_for_pixel_height(&self.font, q.px);
+        var asc_i: c_int = 0;
+        var desc_i: c_int = 0;
+        var gap_i: c_int = 0;
+        huey_stbtt_get_font_vmetrics(&self.font, &asc_i, &desc_i, &gap_i);
+        return .{
+            .ascent = @as(f32, @floatFromInt(asc_i)) * stb_scale_px,
+            .descent = @as(f32, @floatFromInt(desc_i)) * stb_scale_px,
+            .stb_scale = stb_scale_px,
+        };
+    }
+
+    pub fn codepointAdvancePx(self: *const GlyphAtlas, cp: u21, stb_scale_px: f32) f32 {
+        var adv_w: c_int = 0;
+        var lsb: c_int = 0;
+        huey_stbtt_get_codepoint_hmetrics(&self.font, @intCast(cp), &adv_w, &lsb);
+        return @as(f32, @floatFromInt(adv_w)) * stb_scale_px;
+    }
+
+    pub fn kernAdvancePx(self: *const GlyphAtlas, prev_cp: u21, cp: u21, stb_scale_px: f32) f32 {
+        const kern = huey_stbtt_get_codepoint_kern_advance(&self.font, @intCast(prev_cp), @intCast(cp));
+        return @as(f32, @floatFromInt(kern)) * stb_scale_px;
+    }
+
     pub fn emitTextQuadsClipped(
         self: *GlyphAtlas,
         text: []const u8,
