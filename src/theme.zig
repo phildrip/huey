@@ -11,6 +11,7 @@ pub const ThemePreset = enum(u8) {
     nord_dark,
     nord_light,
     oled_dark,
+    braun_dark,
     high_contrast_dark,
     high_contrast_light,
 };
@@ -82,6 +83,19 @@ pub fn buildPreset(preset: ThemePreset) tokens.TokenTable {
             .accent_success = tokens.OklabColor.fromSrgbHex(0xA3BE8C),
             .accent_warn = tokens.OklabColor.fromSrgbHex(0xEBCB8B),
             .accent_danger = tokens.OklabColor.fromSrgbHex(0xBF616A),
+        },
+        .braun_dark => .{
+            .bg_base = tokens.OklabColor.fromSrgbHex(0x000000),
+            .bg_surface = tokens.OklabColor.fromSrgbHex(0x1A1B1E),
+            .bg_elevated = tokens.OklabColor.fromSrgbHex(0x26282C),
+            .border_default = tokens.OklabColor.fromSrgbHex(0x2E3036),
+            .border_focus = fitHexAtLightness(0xEA5B1F, 0.72),
+            .text_primary = tokens.OklabColor.fromSrgbHex(0xF2F2EE),
+            .text_muted = tokens.OklabColor.fromSrgbHex(0x8E9096),
+            .accent_primary = fitHexAtLightness(0xEA5B1F, 0.72),
+            .accent_success = tokens.OklabColor.fromSrgbHex(0x4CAF6E),
+            .accent_warn = fitHexAtLightness(0xEA5B1F, 0.72),
+            .accent_danger = fitHexAtLightness(0xD94B43, 0.72),
         },
         .high_contrast_dark => .{
             .bg_base = tokens.OklabColor.fromSrgbHex(0x000000),
@@ -293,6 +307,96 @@ pub fn parseGtkThemePreference(theme_name: []const u8, prefer_dark_flag: bool) C
         pos = idx + 1;
     }
     return .light;
+}
+
+/// Decodes a packed 32-bit `0xAARRGGBB` color into normalized sRGB `[r, g, b, a]` channels.
+pub fn colorFromArgb(argb: u32) core.Color {
+    const a: f32 = @as(f32, @floatFromInt((argb >> 24) & 0xFF)) / 255.0;
+    const r: f32 = @as(f32, @floatFromInt((argb >> 16) & 0xFF)) / 255.0;
+    const g: f32 = @as(f32, @floatFromInt((argb >> 8) & 0xFF)) / 255.0;
+    const b: f32 = @as(f32, @floatFromInt(argb & 0xFF)) / 255.0;
+    return .{ r, g, b, a };
+}
+
+/// Derives a dark/OLED-aware `TokenTable` in Oklab space from OS dynamic ARGB colors.
+pub fn fromOsDynamicColors(accent_argb: u32, surface_argb: u32, prefer_oled: bool) tokens.TokenTable {
+    const has_accent = (accent_argb >> 24) != 0;
+    const has_surface = (surface_argb >> 24) != 0;
+    if (!has_accent and !has_surface) {
+        return buildPreset(if (prefer_oled) .braun_dark else .nord_dark);
+    }
+
+    const braun_ok = tokens.OklabColor.fromSrgbHex(0xEA5B1F);
+    const braun_c = @sqrt(braun_ok.a * braun_ok.a + braun_ok.b * braun_ok.b);
+    var hue_a = braun_ok.a;
+    var hue_b = braun_ok.b;
+    var eff_chroma = braun_c;
+
+    if (has_accent) {
+        const acc_srgb = colorFromArgb(accent_argb);
+        const acc_ok = tokens.OklabColor.fromSrgb(.{ acc_srgb[0], acc_srgb[1], acc_srgb[2], 1.0 });
+        const chroma = @sqrt(acc_ok.a * acc_ok.a + acc_ok.b * acc_ok.b);
+        if (std.math.isFinite(chroma) and chroma >= 0.02) {
+            hue_a = acc_ok.a;
+            hue_b = acc_ok.b;
+            eff_chroma = chroma;
+        }
+    }
+
+    const hue_len = @sqrt(hue_a * hue_a + hue_b * hue_b);
+    const cos_h = hue_a / hue_len;
+    const sin_h = hue_b / hue_len;
+    const accent_chroma = std.math.clamp(eff_chroma, 0.08, 0.16);
+
+    var surface_l: f32 = if (prefer_oled) 0.18 else 0.24;
+    var surf_cos = cos_h;
+    var surf_sin = sin_h;
+    var surf_chroma: f32 = 0.014;
+
+    if (has_surface) {
+        const surf_srgb = colorFromArgb(surface_argb);
+        const surf_ok = tokens.OklabColor.fromSrgb(.{ surf_srgb[0], surf_srgb[1], surf_srgb[2], 1.0 });
+        surface_l = if (prefer_oled)
+            std.math.clamp(surf_ok.l, 0.16, 0.24)
+        else
+            std.math.clamp(surf_ok.l, 0.23, 0.27);
+        const sc = @sqrt(surf_ok.a * surf_ok.a + surf_ok.b * surf_ok.b);
+        if (std.math.isFinite(sc) and sc >= 0.01) {
+            surf_cos = surf_ok.a / sc;
+            surf_sin = surf_ok.b / sc;
+            surf_chroma = @min(sc, 0.025);
+        } else {
+            surf_chroma = 0.008;
+        }
+    }
+
+    const elevated_l = if (prefer_oled) surface_l + 0.06 else surface_l + 0.05;
+
+    var t: tokens.TokenTable = .{
+        .bg_base = if (prefer_oled)
+            tokens.OklabColor.fromSrgbHex(0x000000)
+        else
+            fitOklabInSrgbGamut(0.19, surf_cos, surf_sin, @min(surf_chroma, 0.014)),
+        .bg_surface = fitOklabInSrgbGamut(surface_l, surf_cos, surf_sin, surf_chroma),
+        .bg_elevated = fitOklabInSrgbGamut(elevated_l, surf_cos, surf_sin, @min(surf_chroma + 0.004, 0.030)),
+        .border_default = fitOklabInSrgbGamut(0.34, surf_cos, surf_sin, @min(surf_chroma + 0.006, 0.025)),
+        .border_focus = fitOklabInSrgbGamut(0.76, cos_h, sin_h, accent_chroma),
+        .text_primary = fitOklabInSrgbGamut(0.95, surf_cos, surf_sin, 0.006),
+        .text_muted = fitOklabInSrgbGamut(0.70, surf_cos, surf_sin, 0.016),
+        .accent_primary = fitOklabInSrgbGamut(0.72, cos_h, sin_h, accent_chroma),
+        .accent_success = fitHexAtLightness(0x4CAF6E, 0.72),
+        .accent_warn = fitHexAtLightness(0xEA5B1F, 0.72),
+        .accent_danger = fitHexAtLightness(0xD94B43, 0.72),
+    };
+
+    if (contrastRatio(t.text_primary.toSrgb(), t.bg_base.toSrgb()) < 7.0 or
+        contrastRatio(t.text_primary.toSrgb(), t.bg_surface.toSrgb()) < 7.0)
+    {
+        t.text_primary = tokens.OklabColor.fromSrgbHex(0xFFFFFF);
+    }
+
+    t.checksum = t.computeChecksum();
+    return t;
 }
 
 /// Resolves an OS theme hint into a validated `TokenTable`.

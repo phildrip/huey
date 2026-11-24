@@ -1018,3 +1018,467 @@ pub const SurfaceHost = struct {
         cfg.burn_in_protection = self.burn_in_protection;
     }
 };
+
+pub const BubbleOrb = struct {
+    home_x: f32,
+    home_y: f32,
+    base_radius: f32,
+};
+
+pub const ProjectedOrb = struct {
+    x: f32,
+    y: f32,
+    radius: f32,
+    scale: f32,
+    alpha: f32,
+    visible: bool,
+};
+
+fn bubbleSmoothstep(edge0: f32, edge1: f32, x: f32) f32 {
+    if (edge1 <= edge0) return if (x >= edge1) 1.0 else 0.0;
+    const t = std.math.clamp((x - edge0) / (edge1 - edge0), 0.0, 1.0);
+    return t * t * (3.0 - 2.0 * t);
+}
+
+fn bubbleLerp(a: f32, b: f32, t: f32) f32 {
+    return a + (b - a) * t;
+}
+
+fn positiveOrDefault(v: f32, fallback: f32) f32 {
+    if (!std.math.isFinite(v) or v <= 0.0) return fallback;
+    return v;
+}
+
+/// Zero-allocation spatial watch launcher grid with spherical fisheye projection,
+/// inertial drag with rubber-band bounds, nearest-orb detent snap, and press ripple.
+pub const BubbleGrid = struct {
+    pub const MAX_ORBS: usize = 19;
+
+    pan_x: f32 = 0.0,
+    pan_y: f32 = 0.0,
+    vel_x: f32 = 0.0,
+    vel_y: f32 = 0.0,
+    dragging: bool = false,
+    drag_last_x: f32 = 0.0,
+    drag_last_y: f32 = 0.0,
+    pressed_orb: ?usize = null,
+    ripple_orb: ?usize = null,
+    press_t: f32 = 0.0,
+    press_vel: f32 = 0.0,
+    settled: bool = true,
+    max_pan_radius: f32 = 84.0,
+    lens_radius: f32 = 116.5,
+    spacing_dp: f32 = 64.0,
+
+    const DEFAULT_MAX_PAN_RADIUS: f32 = 84.0;
+    const DEFAULT_LENS_RADIUS: f32 = 116.5;
+    const DEFAULT_SPACING_DP: f32 = 64.0;
+
+    /// Initializes a `BubbleGrid` while sanitizing non-finite or non-positive geometry parameters.
+    pub fn init(max_pan_radius: f32, lens_radius: f32, spacing_dp: f32) BubbleGrid {
+        return .{
+            .max_pan_radius = positiveOrDefault(max_pan_radius, DEFAULT_MAX_PAN_RADIUS),
+            .lens_radius = positiveOrDefault(lens_radius, DEFAULT_LENS_RADIUS),
+            .spacing_dp = positiveOrDefault(spacing_dp, DEFAULT_SPACING_DP),
+        };
+    }
+
+    /// Computes symmetric hexagonal grid home offsets:
+    /// - Slot 0: `(0, 0)`
+    /// - Slots 1..6: Ring 1 at distance `spacing` at `-120°, -60°, 0°, 60°, 120°, 180°`
+    /// - Slots 7..12: Ring 2 staggered at distance `spacing * sqrt(3)` at `-150°, -90°, -30°, 30°, 90°, 150°`
+    /// - Slots 13..18: Ring 2 outer at distance `2 * spacing` at `-120°, -60°, 0°, 60°, 120°, 180°`
+    pub fn hexOffset(ring_slot: u8, spacing: f32) RingPoint {
+        if (!std.math.isFinite(spacing) or spacing <= 0.0) {
+            return .{ .x = 0.0, .y = 0.0 };
+        }
+        if (ring_slot == 0) {
+            return .{ .x = 0.0, .y = 0.0 };
+        }
+        const pi_3: f32 = std.math.pi / 3.0;
+        if (ring_slot <= 6) {
+            const k: f32 = @floatFromInt(ring_slot - 1);
+            const angle = -2.0 * pi_3 + k * pi_3;
+            return .{
+                .x = spacing * @cos(angle),
+                .y = spacing * @sin(angle),
+            };
+        }
+        if (ring_slot <= 12) {
+            const k: f32 = @floatFromInt(ring_slot - 7);
+            const angle = -5.0 * (std.math.pi / 6.0) + k * pi_3;
+            const r = spacing * @sqrt(@as(f32, 3.0));
+            return .{
+                .x = r * @cos(angle),
+                .y = r * @sin(angle),
+            };
+        }
+        if (ring_slot <= 18) {
+            const k: f32 = @floatFromInt(ring_slot - 13);
+            const angle = -2.0 * pi_3 + k * pi_3;
+            const r = spacing * 2.0;
+            return .{
+                .x = r * @cos(angle),
+                .y = r * @sin(angle),
+            };
+        }
+        return .{ .x = 0.0, .y = 0.0 };
+    }
+
+    pub fn beginDrag(self: *BubbleGrid, x: f32, y: f32) void {
+        if (!std.math.isFinite(x) or !std.math.isFinite(y)) return;
+        self.dragging = true;
+        self.drag_last_x = x;
+        self.drag_last_y = y;
+        self.vel_x = 0.0;
+        self.vel_y = 0.0;
+        self.pressed_orb = null;
+        self.settled = false;
+    }
+
+    pub fn updateDrag(self: *BubbleGrid, x: f32, y: f32, dt: f32) void {
+        if (!self.dragging) return;
+        if (!std.math.isFinite(x) or !std.math.isFinite(y) or !std.math.isFinite(dt) or dt <= 0.0) return;
+
+        self.pan_x = sanitizeFinite(self.pan_x);
+        self.pan_y = sanitizeFinite(self.pan_y);
+        self.vel_x = sanitizeFinite(self.vel_x);
+        self.vel_y = sanitizeFinite(self.vel_y);
+
+        const dx_f64: f64 = @as(f64, x) - @as(f64, self.drag_last_x);
+        const dy_f64: f64 = @as(f64, y) - @as(f64, self.drag_last_y);
+        if (!std.math.isFinite(dx_f64) or !std.math.isFinite(dy_f64)) return;
+
+        const max_r_f64: f64 = @as(f64, positiveOrDefault(self.max_pan_radius, DEFAULT_MAX_PAN_RADIUS));
+        const pan_x_f64: f64 = @as(f64, self.pan_x);
+        const pan_y_f64: f64 = @as(f64, self.pan_y);
+        const pan_r_f64: f64 = std.math.hypot(pan_x_f64, pan_y_f64);
+
+        var eff_dx = dx_f64;
+        var eff_dy = dy_f64;
+        if (pan_r_f64 > max_r_f64 and pan_r_f64 > 1e-6) {
+            const nx = pan_x_f64 / pan_r_f64;
+            const ny = pan_y_f64 / pan_r_f64;
+            const radial_dot = dx_f64 * nx + dy_f64 * ny;
+            if (radial_dot > 0.0) {
+                eff_dx -= 0.65 * radial_dot * nx;
+                eff_dy -= 0.65 * radial_dot * ny;
+            }
+        }
+
+        const pan_limit = max_r_f64 * 8.0;
+        const next_px = std.math.clamp(pan_x_f64 + eff_dx, -pan_limit, pan_limit);
+        const next_py = std.math.clamp(pan_y_f64 + eff_dy, -pan_limit, pan_limit);
+        self.pan_x = @floatCast(next_px);
+        self.pan_y = @floatCast(next_py);
+
+        const eff_dt = @max(@as(f64, dt), 1e-4);
+        const inst_vx: f32 = @floatCast(std.math.clamp(eff_dx / eff_dt, -2500.0, 2500.0));
+        const inst_vy: f32 = @floatCast(std.math.clamp(eff_dy / eff_dt, -2500.0, 2500.0));
+        const blend: f32 = @floatCast(1.0 - @exp(-@min(eff_dt, 0.1) * 20.0));
+        self.vel_x += (inst_vx - self.vel_x) * blend;
+        self.vel_y += (inst_vy - self.vel_y) * blend;
+
+        self.drag_last_x = x;
+        self.drag_last_y = y;
+        self.settled = false;
+    }
+
+    pub fn endDrag(self: *BubbleGrid) void {
+        self.dragging = false;
+        self.settled = false;
+    }
+
+    pub fn setPressedOrb(self: *BubbleGrid, idx: ?usize) void {
+        self.pressed_orb = idx;
+        if (idx != null) {
+            self.ripple_orb = idx;
+        }
+        self.settled = false;
+    }
+
+    pub fn recenter(self: *BubbleGrid) void {
+        self.pan_x = 0.0;
+        self.pan_y = 0.0;
+        self.vel_x = 0.0;
+        self.vel_y = 0.0;
+        self.dragging = false;
+        self.pressed_orb = null;
+        self.ripple_orb = null;
+        self.press_t = 0.0;
+        self.press_vel = 0.0;
+        self.settled = true;
+    }
+
+    pub fn isAnimating(self: *const BubbleGrid) bool {
+        const target_press: f32 = if (self.pressed_orb != null) 1.0 else 0.0;
+        return self.dragging or
+            !self.settled or
+            @abs(self.vel_x) > 0.0 or
+            @abs(self.vel_y) > 0.0 or
+            @abs(self.press_t - target_press) > 0.001 or
+            @abs(self.press_vel) > 0.001;
+    }
+
+    fn isValidOrbIdx(idx: ?usize, orbs: []const BubbleOrb) bool {
+        const i = idx orelse return false;
+        const count = @min(orbs.len, MAX_ORBS);
+        if (i >= count) return false;
+        const o = orbs[i];
+        return std.math.isFinite(o.home_x) and
+            std.math.isFinite(o.home_y) and
+            std.math.isFinite(o.base_radius) and
+            o.base_radius > 0.0;
+    }
+
+    fn nearestDetent(self: *const BubbleGrid, orbs: []const BubbleOrb, max_r: f32) RingPoint {
+        const count = @min(orbs.len, MAX_ORBS);
+        if (count == 0) return .{ .x = 0.0, .y = 0.0 };
+
+        var best_idx: ?usize = null;
+        var best_dist: f64 = std.math.inf(f64);
+        const px_f64: f64 = @as(f64, self.pan_x);
+        const py_f64: f64 = @as(f64, self.pan_y);
+        for (0..count) |i| {
+            const o = orbs[i];
+            if (!std.math.isFinite(o.home_x) or !std.math.isFinite(o.home_y) or
+                !std.math.isFinite(o.base_radius) or o.base_radius <= 0.0)
+            {
+                continue;
+            }
+            const wx: f64 = @as(f64, o.home_x) + px_f64;
+            const wy: f64 = @as(f64, o.home_y) + py_f64;
+            const dist = std.math.hypot(wx, wy);
+            if (std.math.isFinite(dist) and dist < best_dist) {
+                best_dist = dist;
+                best_idx = i;
+            }
+        }
+        const idx = best_idx orelse return .{ .x = 0.0, .y = 0.0 };
+        var tx: f64 = -@as(f64, orbs[idx].home_x);
+        var ty: f64 = -@as(f64, orbs[idx].home_y);
+        if (!std.math.isFinite(tx) or !std.math.isFinite(ty)) {
+            return .{ .x = 0.0, .y = 0.0 };
+        }
+        const max_r_f64: f64 = @as(f64, max_r);
+        const tr = std.math.hypot(tx, ty);
+        if (tr > max_r_f64 and tr > 1e-4) {
+            const s = max_r_f64 / tr;
+            tx *= s;
+            ty *= s;
+        }
+        const ftx: f32 = @floatCast(tx);
+        const fty: f32 = @floatCast(ty);
+        if (!std.math.isFinite(ftx) or !std.math.isFinite(fty)) {
+            return .{ .x = 0.0, .y = 0.0 };
+        }
+        return .{ .x = ftx, .y = fty };
+    }
+
+    /// Advances inertial scroll, rubber-band bounds, detent snap, and press ripple spring.
+    /// Returns `true` while still animating.
+    pub fn step(self: *BubbleGrid, dt: f32, orbs: []const BubbleOrb) bool {
+        if (!std.math.isFinite(dt) or dt <= 0.0) {
+            return self.isAnimating();
+        }
+
+        self.pan_x = sanitizeFinite(self.pan_x);
+        self.pan_y = sanitizeFinite(self.pan_y);
+        self.vel_x = sanitizeFinite(self.vel_x);
+        self.vel_y = sanitizeFinite(self.vel_y);
+        self.press_t = sanitizeUnit(self.press_t);
+        self.press_vel = sanitizeFinite(self.press_vel);
+
+        if (self.pressed_orb != null and !isValidOrbIdx(self.pressed_orb, orbs)) {
+            self.pressed_orb = null;
+        }
+        if (self.ripple_orb != null and !isValidOrbIdx(self.ripple_orb, orbs)) {
+            self.ripple_orb = null;
+        }
+
+        const max_r = positiveOrDefault(self.max_pan_radius, DEFAULT_MAX_PAN_RADIUS);
+        const clamped_dt = @min(dt, 0.5);
+        const substeps: usize = @max(@as(usize, 1), @as(usize, @intFromFloat(@ceil(clamped_dt / 0.02))));
+        const sub_dt = clamped_dt / @as(f32, @floatFromInt(substeps));
+
+        const target_press: f32 = if (self.pressed_orb != null) 1.0 else 0.0;
+        var target_pan: RingPoint = .{ .x = 0.0, .y = 0.0 };
+
+        for (0..substeps) |_| {
+            // Press spring (critically damped, omega = 28)
+            const omega: f32 = 28.0;
+            const pf = self.press_t - target_press;
+            const pa = -omega * omega * pf - 2.0 * omega * self.press_vel;
+            self.press_vel += pa * sub_dt;
+            self.press_t = std.math.clamp(self.press_t + self.press_vel * sub_dt, 0.0, 1.0);
+            if (@abs(self.press_t - target_press) < 0.001 and @abs(self.press_vel) < 0.005) {
+                self.press_t = target_press;
+                self.press_vel = 0.0;
+            }
+
+            if (!self.dragging) {
+                const damp = @exp(-sub_dt * 7.5);
+                self.vel_x *= damp;
+                self.vel_y *= damp;
+
+                const pan_r = std.math.hypot(self.pan_x, self.pan_y);
+                if (pan_r > max_r and pan_r > 1e-4) {
+                    const excess = pan_r - max_r;
+                    const nx = self.pan_x / pan_r;
+                    const ny = self.pan_y / pan_r;
+                    // Radial rubber-band pullback + extra out-of-bounds damping to prevent opposite-edge slingshot
+                    const extra_damp = @exp(-sub_dt * 6.0);
+                    self.vel_x = self.vel_x * extra_damp - nx * excess * 80.0 * sub_dt;
+                    self.vel_y = self.vel_y * extra_damp - ny * excess * 80.0 * sub_dt;
+                }
+
+                self.pan_x += self.vel_x * sub_dt;
+                self.pan_y += self.vel_y * sub_dt;
+
+                target_pan = self.nearestDetent(orbs, max_r);
+                const speed = std.math.hypot(self.vel_x, self.vel_y);
+                if (speed < 18.0 and std.math.hypot(self.pan_x, self.pan_y) <= max_r + 1.0) {
+                    const pull = 1.0 - @exp(-sub_dt * 12.0);
+                    self.pan_x += (target_pan.x - self.pan_x) * pull;
+                    self.pan_y += (target_pan.y - self.pan_y) * pull;
+                }
+            }
+        }
+
+        if (self.pressed_orb == null and self.press_t <= 0.001 and @abs(self.press_vel) <= 0.001) {
+            self.press_t = 0.0;
+            self.press_vel = 0.0;
+            self.ripple_orb = null;
+        }
+
+        if (!self.dragging) {
+            target_pan = self.nearestDetent(orbs, max_r);
+            const speed = std.math.hypot(self.vel_x, self.vel_y);
+            const dist_to_detent = std.math.hypot(self.pan_x - target_pan.x, self.pan_y - target_pan.y);
+            const press_converged = @abs(self.press_t - target_press) <= 0.001 and @abs(self.press_vel) <= 0.001;
+            if (speed < 0.5 and dist_to_detent < 0.15 and press_converged) {
+                self.pan_x = target_pan.x;
+                self.pan_y = target_pan.y;
+                self.vel_x = 0.0;
+                self.vel_y = 0.0;
+                self.press_t = target_press;
+                self.press_vel = 0.0;
+                if (self.pressed_orb == null) {
+                    self.ripple_orb = null;
+                }
+                self.settled = true;
+            } else {
+                self.settled = false;
+            }
+        } else {
+            self.settled = false;
+        }
+
+        return self.isAnimating();
+    }
+
+    /// Projects `orbs[orb_idx]` through the spherical fisheye lens centered at `(cx, cy)`.
+    pub fn project(self: *const BubbleGrid, orb_idx: usize, orbs: []const BubbleOrb, cx: f32, cy: f32) ProjectedOrb {
+        const invisible: ProjectedOrb = .{
+            .x = 0.0,
+            .y = 0.0,
+            .radius = 0.0,
+            .scale = 0.0,
+            .alpha = 0.0,
+            .visible = false,
+        };
+        if (orb_idx >= orbs.len or orb_idx >= MAX_ORBS) return invisible;
+        if (!std.math.isFinite(cx) or !std.math.isFinite(cy)) return invisible;
+        if (!std.math.isFinite(self.pan_x) or !std.math.isFinite(self.pan_y)) return invisible;
+
+        const safe_lens = positiveOrDefault(self.lens_radius, DEFAULT_LENS_RADIUS);
+        const orb = orbs[orb_idx];
+        if (!std.math.isFinite(orb.home_x) or !std.math.isFinite(orb.home_y) or
+            !std.math.isFinite(orb.base_radius) or orb.base_radius <= 0.0)
+        {
+            return invisible;
+        }
+
+        var wx = orb.home_x + self.pan_x;
+        var wy = orb.home_y + self.pan_y;
+        if (!std.math.isFinite(wx) or !std.math.isFinite(wy)) return invisible;
+
+        const safe_press_t = sanitizeUnit(self.press_t);
+        if (self.ripple_orb) |r_idx| {
+            if (r_idx < orbs.len and r_idx < MAX_ORBS and r_idx != orb_idx and safe_press_t > 0.001) {
+                const rippled = orbs[r_idx];
+                if (std.math.isFinite(rippled.home_x) and std.math.isFinite(rippled.home_y)) {
+                    const px = rippled.home_x + self.pan_x;
+                    const py = rippled.home_y + self.pan_y;
+                    const dx = wx - px;
+                    const dy = wy - py;
+                    const d = std.math.hypot(dx, dy);
+                    const spacing = positiveOrDefault(self.spacing_dp, DEFAULT_SPACING_DP);
+                    const ripple_range = 1.45 * spacing;
+                    if (std.math.isFinite(d) and d > 0.01 and d < ripple_range) {
+                        const nudge = 2.6 * safe_press_t * (1.0 - d / ripple_range);
+                        wx += (dx / d) * nudge;
+                        wy += (dy / d) * nudge;
+                    }
+                }
+            }
+        }
+        if (!std.math.isFinite(wx) or !std.math.isFinite(wy)) return invisible;
+
+        const r_f64 = std.math.hypot(@as(f64, wx), @as(f64, wy));
+        const safe_lens_f64: f64 = @as(f64, safe_lens);
+        const u_f64 = r_f64 / safe_lens_f64;
+        // Strictly monotonic radial compression for all u >= 0 (matches 1/(1 + 0.20*u^2) at small u)
+        const r_proj_f64 = r_f64 / @sqrt(1.0 + 0.40 * u_f64 * u_f64);
+        if (!std.math.isFinite(r_proj_f64)) return invisible;
+
+        const proj_x: f32 = if (r_f64 > 1e-4) @floatCast(@as(f64, cx) + @as(f64, wx) * (r_proj_f64 / r_f64)) else cx;
+        const proj_y: f32 = if (r_f64 > 1e-4) @floatCast(@as(f64, cy) + @as(f64, wy) * (r_proj_f64 / r_f64)) else cy;
+        if (!std.math.isFinite(proj_x) or !std.math.isFinite(proj_y)) return invisible;
+
+        const u: f32 = @floatCast(@min(u_f64, 1e6));
+        var scale = bubbleLerp(1.0, 0.56, bubbleSmoothstep(0.18, 1.05, u));
+        if (self.ripple_orb == orb_idx) {
+            scale *= (1.0 - 0.10 * safe_press_t);
+        }
+        const radius = orb.base_radius * scale;
+        const inner_alpha = bubbleLerp(1.0, 0.42, bubbleSmoothstep(0.55, 1.18, u));
+        const far_fade = 1.0 - bubbleSmoothstep(1.6, 2.2, u);
+        const alpha = std.math.clamp(inner_alpha * far_fade, 0.0, 1.0);
+        const visible = alpha > 0.02 and radius > 0.5;
+
+        return .{
+            .x = proj_x,
+            .y = proj_y,
+            .radius = radius,
+            .scale = scale,
+            .alpha = alpha,
+            .visible = visible,
+        };
+    }
+
+    /// Hit-tests `(px, py)` against projected visible orbs, returning the matching orb with highest `scale`.
+    pub fn hitTest(self: *const BubbleGrid, orbs: []const BubbleOrb, cx: f32, cy: f32, px: f32, py: f32) ?usize {
+        if (!std.math.isFinite(px) or !std.math.isFinite(py) or
+            !std.math.isFinite(cx) or !std.math.isFinite(cy))
+        {
+            return null;
+        }
+        const count = @min(orbs.len, MAX_ORBS);
+        var best_idx: ?usize = null;
+        var best_scale: f32 = -1.0;
+
+        for (0..count) |i| {
+            const p = self.project(i, orbs, cx, cy);
+            if (!p.visible) continue;
+            const dist = std.math.hypot(@as(f64, px) - @as(f64, p.x), @as(f64, py) - @as(f64, p.y));
+            if (dist <= @as(f64, p.radius)) {
+                if (p.scale > best_scale) {
+                    best_scale = p.scale;
+                    best_idx = i;
+                }
+            }
+        }
+        return best_idx;
+    }
+};

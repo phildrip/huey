@@ -578,3 +578,247 @@ test "applyCurvedEdgeTransform scales ARC/SURFACE/CAPSULE params and preserves G
     try std.testing.expectApproxEqAbs(4.0 * m_cap.scale, quads[2].params[0], 0.01);
     try std.testing.expectApproxEqAbs(@as(f32, -0.45), quads[3].params[0], 0.0001);
 }
+
+test "BubbleGrid.hexOffset places slot 0 at origin and rings 1 & 2 symmetrically" {
+    const s: f32 = 64.0;
+    const p0 = wearos.BubbleGrid.hexOffset(0, s);
+    try std.testing.expectEqual(@as(f32, 0.0), p0.x);
+    try std.testing.expectEqual(@as(f32, 0.0), p0.y);
+
+    // Ring 1 (slots 1..6): exact distance s from origin and opposite pairs sum to (0, 0)
+    var ring1: [6]wearos.RingPoint = undefined;
+    for (0..6) |i| {
+        const pt = wearos.BubbleGrid.hexOffset(@intCast(i + 1), s);
+        ring1[i] = pt;
+        const dist = std.math.hypot(pt.x, pt.y);
+        try std.testing.expectApproxEqAbs(s, dist, 0.01);
+    }
+    for (0..3) |i| {
+        try std.testing.expectApproxEqAbs(@as(f32, 0.0), ring1[i].x + ring1[i + 3].x, 0.01);
+        try std.testing.expectApproxEqAbs(@as(f32, 0.0), ring1[i].y + ring1[i + 3].y, 0.01);
+    }
+
+    // Ring 2 (slots 7..12): exact distance s * sqrt(3) and opposite pairs sum to (0, 0)
+    const r2_expected = s * @sqrt(@as(f32, 3.0));
+    var ring2: [6]wearos.RingPoint = undefined;
+    for (0..6) |i| {
+        const pt = wearos.BubbleGrid.hexOffset(@intCast(i + 7), s);
+        ring2[i] = pt;
+        const dist = std.math.hypot(pt.x, pt.y);
+        try std.testing.expectApproxEqAbs(r2_expected, dist, 0.02);
+    }
+    for (0..3) |i| {
+        try std.testing.expectApproxEqAbs(@as(f32, 0.0), ring2[i].x + ring2[i + 3].x, 0.02);
+        try std.testing.expectApproxEqAbs(@as(f32, 0.0), ring2[i].y + ring2[i + 3].y, 0.02);
+    }
+
+    // Outer ring (slots 13..18): exact distance 2*s and opposite pairs sum to (0, 0)
+    var outer: [6]wearos.RingPoint = undefined;
+    for (0..6) |i| {
+        const pt = wearos.BubbleGrid.hexOffset(@intCast(i + 13), s);
+        outer[i] = pt;
+        try std.testing.expectApproxEqAbs(2.0 * s, std.math.hypot(pt.x, pt.y), 0.02);
+    }
+    for (0..3) |i| {
+        try std.testing.expectApproxEqAbs(@as(f32, 0.0), outer[i].x + outer[i + 3].x, 0.02);
+        try std.testing.expectApproxEqAbs(@as(f32, 0.0), outer[i].y + outer[i + 3].y, 0.02);
+    }
+
+    // Slot >= 19 and invalid spacing fall back to (0, 0)
+    try std.testing.expectEqual(@as(f32, 0.0), wearos.BubbleGrid.hexOffset(19, s).x);
+    try std.testing.expectEqual(@as(f32, 0.0), wearos.BubbleGrid.hexOffset(19, s).y);
+    try std.testing.expectEqual(@as(f32, 0.0), wearos.BubbleGrid.hexOffset(1, -10.0).x);
+    try std.testing.expectEqual(@as(f32, 0.0), wearos.BubbleGrid.hexOffset(1, std.math.nan(f32)).y);
+    try std.testing.expectEqual(@as(usize, 19), wearos.BubbleGrid.MAX_ORBS);
+}
+
+test "BubbleGrid spherical lens shrinks/fades peripheral orbs, couples neighbor press ripple, and hit-tests highest scale" {
+    var grid = wearos.BubbleGrid.init(84.0, 116.5, 64.0);
+    const orbs = [_]wearos.BubbleOrb{
+        .{ .home_x = 0.0, .home_y = 0.0, .base_radius = 28.0 },
+        .{ .home_x = 64.0, .home_y = 0.0, .base_radius = 24.0 },
+        .{ .home_x = -64.0, .home_y = 0.0, .base_radius = 24.0 },
+    };
+    const cx: f32 = 116.5;
+    const cy: f32 = 116.5;
+
+    const p_center = grid.project(0, &orbs, cx, cy);
+    const p_right = grid.project(1, &orbs, cx, cy);
+    try std.testing.expect(p_center.visible and p_right.visible);
+    try std.testing.expectApproxEqAbs(cx, p_center.x, 0.01);
+    try std.testing.expectApproxEqAbs(cy, p_center.y, 0.01);
+    try std.testing.expectApproxEqAbs(@as(f32, 1.0), p_center.scale, 0.01);
+    try std.testing.expect(p_right.scale < p_center.scale);
+    try std.testing.expect(p_right.alpha <= p_center.alpha);
+    // Fisheye compression pulls projected x closer to center than linear (cx + 64)
+    try std.testing.expect(p_right.x > cx and p_right.x < cx + 64.0);
+
+    // Hit test center & peripheral orb
+    try std.testing.expectEqual(@as(?usize, 0), grid.hitTest(&orbs, cx, cy, p_center.x, p_center.y));
+    try std.testing.expectEqual(@as(?usize, 1), grid.hitTest(&orbs, cx, cy, p_right.x, p_right.y));
+    try std.testing.expectEqual(@as(?usize, null), grid.hitTest(&orbs, cx, cy, 0.0, 0.0));
+
+    // Overlapping orbs: hitTest picks highest scale
+    const overlap_orbs = [_]wearos.BubbleOrb{
+        .{ .home_x = 40.0, .home_y = 0.0, .base_radius = 36.0 },
+        .{ .home_x = 0.0, .home_y = 0.0, .base_radius = 28.0 },
+    };
+    try std.testing.expectEqual(@as(?usize, 1), grid.hitTest(&overlap_orbs, cx, cy, cx + 10.0, cy));
+
+    // Press ripple shrinks pressed orb slightly and nudges adjacent neighbors radially outward
+    grid.setPressedOrb(0);
+    for (0..25) |_| {
+        _ = grid.step(0.016, &orbs);
+    }
+    const p_center_pressed = grid.project(0, &orbs, cx, cy);
+    const p_right_rippled = grid.project(1, &orbs, cx, cy);
+    try std.testing.expect(p_center_pressed.scale < p_center.scale);
+    try std.testing.expect(p_right_rippled.x > p_right.x);
+}
+
+test "BubbleGrid drag rubber-band, fling detent snap, recenter, and NaN/Inf sanitization" {
+    var grid = wearos.BubbleGrid.init(84.0, 116.5, 64.0);
+    const orbs = [_]wearos.BubbleOrb{
+        .{ .home_x = 0.0, .home_y = 0.0, .base_radius = 28.0 },
+        .{ .home_x = 64.0, .home_y = 0.0, .base_radius = 24.0 },
+    };
+
+    try std.testing.expect(!grid.isAnimating());
+
+    // Drag beyond max_pan_radius applies 0.35 rubber-band attenuation
+    grid.beginDrag(100.0, 100.0);
+    try std.testing.expect(grid.isAnimating());
+    grid.updateDrag(200.0, 100.0, 0.016); // pan_x = 100 (> 84)
+    try std.testing.expectApproxEqAbs(@as(f32, 100.0), grid.pan_x, 0.01);
+    grid.updateDrag(220.0, 100.0, 0.016); // beyond 84 -> attenuated by 0.35 -> +7.0
+    try std.testing.expectApproxEqAbs(@as(f32, 107.0), grid.pan_x, 0.01);
+    grid.endDrag();
+
+    // Drag to pan near (-64, 0) and settle onto orb 1 detent
+    grid.recenter();
+    try std.testing.expect(!grid.isAnimating());
+    grid.beginDrag(100.0, 100.0);
+    grid.updateDrag(50.0, 100.0, 0.016); // pan_x = -50 (nearest orb is orb 1 at home_x = 64 -> target_pan = -64)
+    grid.endDrag();
+    var frames: usize = 0;
+    while (grid.step(0.016, &orbs) and frames < 240) : (frames += 1) {}
+    try std.testing.expect(!grid.isAnimating());
+    try std.testing.expectApproxEqAbs(@as(f32, -64.0), grid.pan_x, 0.01);
+    try std.testing.expectApproxEqAbs(@as(f32, 0.0), grid.pan_y, 0.01);
+
+    // Recenter resets immediately to idle origin
+    grid.recenter();
+    try std.testing.expectEqual(@as(f32, 0.0), grid.pan_x);
+    try std.testing.expect(!grid.isAnimating());
+
+    // NaN/Inf resilience across all inputs
+    const nan = std.math.nan(f32);
+    const inf = std.math.inf(f32);
+    const bad_grid = wearos.BubbleGrid.init(nan, -10.0, inf);
+    try std.testing.expect(bad_grid.max_pan_radius > 0.0 and bad_grid.lens_radius > 0.0 and bad_grid.spacing_dp > 0.0);
+
+    grid.beginDrag(nan, inf);
+    try std.testing.expect(!grid.dragging);
+    grid.beginDrag(10.0, 10.0);
+    grid.updateDrag(nan, 20.0, 0.016);
+    grid.updateDrag(20.0, 20.0, nan);
+    grid.updateDrag(20.0, 20.0, 0.0);
+    try std.testing.expect(std.math.isFinite(grid.pan_x) and std.math.isFinite(grid.vel_x));
+    _ = grid.step(nan, &orbs);
+    _ = grid.step(-1.0, &orbs);
+    try std.testing.expectEqual(@as(?usize, null), grid.hitTest(&orbs, 116.5, 116.5, nan, inf));
+    const oob = grid.project(99, &orbs, 116.5, 116.5);
+    try std.testing.expect(!oob.visible);
+}
+
+test "BubbleGrid: monotonic fisheye past sqrt(5), smooth release ripple_orb, held press & OOB settle, inward drag, and detent skip" {
+    const cx: f32 = 116.5;
+    const cy: f32 = 116.5;
+    const lens: f32 = 116.5;
+
+    // 1. Strictly monotonic fisheye projection at u > sqrt(5) (2.236) and off-screen fade at u >= 2.2
+    var mono_grid = wearos.BubbleGrid.init(84.0, lens, 64.0);
+    const far_orbs = [_]wearos.BubbleOrb{
+        .{ .home_x = 2.5 * lens, .home_y = 0.0, .base_radius = 24.0 },
+        .{ .home_x = 4.0 * lens, .home_y = 0.0, .base_radius = 24.0 },
+    };
+    const p_25 = mono_grid.project(0, &far_orbs, cx, cy);
+    const p_40 = mono_grid.project(1, &far_orbs, cx, cy);
+    try std.testing.expect(p_40.x > p_25.x);
+    try std.testing.expect(!p_25.visible);
+    try std.testing.expectEqual(@as(f32, 0.0), p_25.alpha);
+    try std.testing.expect(!p_40.visible);
+    try std.testing.expectEqual(@as(f32, 0.0), p_40.alpha);
+
+    // Corrupted lens_radius falls back cleanly; NaN pan_x yields invisible projection
+    mono_grid.lens_radius = -10.0;
+    const ok_orbs = [_]wearos.BubbleOrb{
+        .{ .home_x = 0.0, .home_y = 0.0, .base_radius = 24.0 },
+        .{ .home_x = 64.0, .home_y = 0.0, .base_radius = 24.0 },
+    };
+    try std.testing.expect(mono_grid.project(0, &ok_orbs, cx, cy).visible);
+    mono_grid.lens_radius = lens;
+    mono_grid.pan_x = std.math.nan(f32);
+    try std.testing.expect(!mono_grid.project(0, &ok_orbs, cx, cy).visible);
+
+    // 2. ripple_orb smoothly animates release spring instead of snapping; stationary held press settles
+    var press_grid = wearos.BubbleGrid.init(84.0, lens, 64.0);
+    press_grid.setPressedOrb(0);
+    try std.testing.expectEqual(@as(?usize, 0), press_grid.ripple_orb);
+    var hold_frames: usize = 0;
+    while (press_grid.step(0.016, &ok_orbs) and hold_frames < 120) : (hold_frames += 1) {}
+    // Stationary held press must settle and stop animating!
+    try std.testing.expect(!press_grid.isAnimating());
+    try std.testing.expectApproxEqAbs(@as(f32, 1.0), press_grid.press_t, 0.002);
+
+    // Releasing press keeps ripple_orb during spring return so project() decays smoothly
+    press_grid.setPressedOrb(null);
+    try std.testing.expect(press_grid.isAnimating());
+    try std.testing.expectEqual(@as(?usize, 0), press_grid.ripple_orb);
+    const p_unpressed = (wearos.BubbleGrid.init(84.0, lens, 64.0)).project(1, &ok_orbs, cx, cy);
+    _ = press_grid.step(0.016, &ok_orbs);
+    try std.testing.expect(press_grid.press_t > 0.1 and press_grid.press_t < 0.99);
+    const p_releasing = press_grid.project(1, &ok_orbs, cx, cy);
+    try std.testing.expect(p_releasing.x > p_unpressed.x); // neighbor still smoothly returning
+    var rel_frames: usize = 0;
+    while (press_grid.step(0.016, &ok_orbs) and rel_frames < 120) : (rel_frames += 1) {}
+    try std.testing.expect(!press_grid.isAnimating());
+    try std.testing.expectEqual(@as(?usize, null), press_grid.ripple_orb);
+
+    // 3. OOB pressed_orb resets cleanly on step()
+    press_grid.setPressedOrb(99);
+    _ = press_grid.step(0.016, &ok_orbs);
+    try std.testing.expectEqual(@as(?usize, null), press_grid.pressed_orb);
+    try std.testing.expectEqual(@as(?usize, null), press_grid.ripple_orb);
+    try std.testing.expect(!press_grid.isAnimating());
+
+    // 4. Inward drag recovery from beyond max_pan_radius moves 1:1 without attenuation, and large f64 delta is safe
+    var drag_grid = wearos.BubbleGrid.init(84.0, lens, 64.0);
+    drag_grid.beginDrag(100.0, 100.0);
+    drag_grid.updateDrag(200.0, 100.0, 0.016); // pan_x = 100 (> 84)
+    drag_grid.updateDrag(190.0, 100.0, 0.016); // inward dx = -10 -> 1:1 -> pan_x = 90
+    try std.testing.expectApproxEqAbs(@as(f32, 90.0), drag_grid.pan_x, 0.01);
+    drag_grid.endDrag();
+
+    // 5. High-velocity fling stays bounded and settles cleanly
+    drag_grid.recenter();
+    drag_grid.vel_x = -2000.0;
+    drag_grid.settled = false;
+    var fling_frames: usize = 0;
+    while (drag_grid.step(0.016, &ok_orbs) and fling_frames < 300) : (fling_frames += 1) {}
+    try std.testing.expect(!drag_grid.isAnimating());
+    try std.testing.expect(std.math.isFinite(drag_grid.pan_x));
+
+    // 6. nearestDetent skips invisible/invalid orbs (base_radius <= 0 or NaN)
+    const mixed_orbs = [_]wearos.BubbleOrb{
+        .{ .home_x = 0.0, .home_y = 0.0, .base_radius = 0.0 },
+        .{ .home_x = 40.0, .home_y = 0.0, .base_radius = 24.0 },
+    };
+    var det_grid = wearos.BubbleGrid.init(84.0, lens, 64.0);
+    det_grid.pan_x = -5.0; // closer to orb 0 (0,0), but orb 0 has base_radius = 0 -> must snap to orb 1 (-40, 0)
+    det_grid.settled = false;
+    var det_frames: usize = 0;
+    while (det_grid.step(0.016, &mixed_orbs) and det_frames < 240) : (det_frames += 1) {}
+    try std.testing.expect(!det_grid.isAnimating());
+    try std.testing.expectApproxEqAbs(@as(f32, -40.0), det_grid.pan_x, 0.02);
+}

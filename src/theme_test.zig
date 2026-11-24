@@ -8,6 +8,7 @@ test "ThemePreset: all built-in presets pass WCAG AA text/surface contrast" {
         .nord_dark,
         .nord_light,
         .oled_dark,
+        .braun_dark,
         .high_contrast_dark,
         .high_contrast_light,
     };
@@ -23,11 +24,15 @@ test "ThemePreset: all built-in presets pass WCAG AA text/surface contrast" {
         if (p == .high_contrast_dark or p == .high_contrast_light) {
             try std.testing.expect(ratio >= 10.0);
         }
-        // OLED dark must use pure #000000 background for zero-power OLED pixels
-        if (p == .oled_dark) {
+        // OLED dark and Braun dark must use pure #000000 background for zero-power OLED pixels
+        if (p == .oled_dark or p == .braun_dark) {
             try std.testing.expectEqual(@as(f32, 0.0), bg[0]);
             try std.testing.expectEqual(@as(f32, 0.0), bg[1]);
             try std.testing.expectEqual(@as(f32, 0.0), bg[2]);
+        }
+        if (p == .braun_dark) {
+            try std.testing.expect(ratio >= 7.0);
+            try std.testing.expect(theme.contrastRatio(tbl.text_primary.toSrgb(), tbl.bg_surface.toSrgb()) >= 7.0);
         }
     }
 }
@@ -113,6 +118,7 @@ test "C2/H3/H5: checked controls and accents meet WCAG AA contrast across all pr
         .nord_dark,
         .nord_light,
         .oled_dark,
+        .braun_dark,
         .high_contrast_dark,
         .high_contrast_light,
     };
@@ -124,6 +130,32 @@ test "C2/H3/H5: checked controls and accents meet WCAG AA contrast across all pr
             const st = tbl.resolve(k, .{ .checked = true });
             try std.testing.expect(theme.contrastRatio(st.text, st.fill) >= 4.5);
         }
+    }
+
+    // braun_dark: all accents pass >= 4.5:1 on bg_surface & bg_elevated, plus checked hover/active >= 4.5:1
+    const bd = theme.buildPreset(.braun_dark);
+    const bd_surfaces = [_]core.Color{
+        bd.bg_base.toSrgb(),
+        bd.bg_surface.toSrgb(),
+        bd.bg_elevated.toSrgb(),
+    };
+    const bd_accents = [_]core.Color{
+        bd.accent_primary.toSrgb(),
+        bd.border_focus.toSrgb(),
+        bd.accent_success.toSrgb(),
+        bd.accent_warn.toSrgb(),
+        bd.accent_danger.toSrgb(),
+    };
+    for (bd_surfaces) |bg| {
+        for (bd_accents) |acc| {
+            try std.testing.expect(theme.contrastRatio(acc, bg) >= 4.5);
+        }
+    }
+    for (checked_kinds) |k| {
+        const st_hover = bd.resolve(k, .{ .checked = true, .hover = true });
+        const st_active = bd.resolve(k, .{ .checked = true, .active = true });
+        try std.testing.expect(theme.contrastRatio(st_hover.text, st_hover.fill) >= 4.5);
+        try std.testing.expect(theme.contrastRatio(st_active.text, st_active.fill) >= 4.5);
     }
 
     // H5: nord_light accents meet >= 4.5:1 against base/surface/elevated
@@ -245,4 +277,96 @@ test "resolveOsTheme: respects OS color scheme, optional dynamic accent seed, an
     const oled_os = theme.resolveOsTheme(.{ .scheme = .dark, .prefer_oled = true });
     const oled_bg = oled_os.resolve(.surface, .{}).fill;
     try std.testing.expectEqual(@as(f32, 0.0), oled_bg[0]);
+}
+
+test "colorFromArgb: decodes 32-bit ARGB bytes into normalized [0, 1] Color" {
+    const frost = theme.colorFromArgb(0xFF88C0D0);
+    try std.testing.expectApproxEqAbs(@as(f32, 0x88) / 255.0, frost[0], 1e-5);
+    try std.testing.expectApproxEqAbs(@as(f32, 0xC0) / 255.0, frost[1], 1e-5);
+    try std.testing.expectApproxEqAbs(@as(f32, 0xD0) / 255.0, frost[2], 1e-5);
+    try std.testing.expectApproxEqAbs(@as(f32, 1.0), frost[3], 1e-5);
+
+    const braun = theme.colorFromArgb(0xFFEA5B1F);
+    try std.testing.expectApproxEqAbs(@as(f32, 0xEA) / 255.0, braun[0], 1e-5);
+    try std.testing.expectApproxEqAbs(@as(f32, 0x5B) / 255.0, braun[1], 1e-5);
+    try std.testing.expectApproxEqAbs(@as(f32, 0x1F) / 255.0, braun[2], 1e-5);
+    try std.testing.expectApproxEqAbs(@as(f32, 1.0), braun[3], 1e-5);
+
+    const zero = theme.colorFromArgb(0x00000000);
+    try std.testing.expectEqual(@as(f32, 0.0), zero[0]);
+    try std.testing.expectEqual(@as(f32, 0.0), zero[1]);
+    try std.testing.expectEqual(@as(f32, 0.0), zero[2]);
+    try std.testing.expectEqual(@as(f32, 0.0), zero[3]);
+}
+
+test "fromOsDynamicColors: derives valid OLED TokenTable from Android dynamic ARGB colors and fallbacks" {
+    // 0, 0 falls back cleanly to braun_dark (OLED) or nord_dark (non-OLED)
+    const fallback_oled = theme.fromOsDynamicColors(0, 0, true);
+    const braun = theme.buildPreset(.braun_dark);
+    try std.testing.expect(fallback_oled.isValid());
+    try std.testing.expectEqualSlices(u8, std.mem.asBytes(&braun), std.mem.asBytes(&fallback_oled));
+
+    const fallback_nord = theme.fromOsDynamicColors(0, 0, false);
+    const nord = theme.buildPreset(.nord_dark);
+    try std.testing.expect(fallback_nord.isValid());
+    try std.testing.expectEqualSlices(u8, std.mem.asBytes(&nord), std.mem.asBytes(&fallback_nord));
+
+    // Transparent ARGBs (alpha == 0) are treated as unset
+    const trans_both = theme.fromOsDynamicColors(0x00FFFFFF, 0x001A1C1E, true);
+    try std.testing.expectEqualSlices(u8, std.mem.asBytes(&braun), std.mem.asBytes(&trans_both));
+
+    const trans_accent = theme.fromOsDynamicColors(0x00FFFFFF, 0xFF202226, true);
+    const valid_surf_only = theme.fromOsDynamicColors(0, 0xFF202226, true);
+    try std.testing.expectEqualSlices(u8, std.mem.asBytes(&valid_surf_only), std.mem.asBytes(&trans_accent));
+
+    // Material You blue, sage green, coral, and extreme inputs (black, white, zero-accent/non-zero-surface)
+    const cases = [_]struct {
+        accent: u32,
+        surface: u32,
+        oled: bool,
+    }{
+        .{ .accent = 0xFF4285F4, .surface = 0xFF1A1C1E, .oled = true }, // Material You blue
+        .{ .accent = 0xFF6B9E78, .surface = 0xFF1E241F, .oled = true }, // Sage green
+        .{ .accent = 0xFFE87058, .surface = 0xFF2B211F, .oled = true }, // Coral
+        .{ .accent = 0xFF000000, .surface = 0xFF000000, .oled = true }, // Extreme black (OLED)
+        .{ .accent = 0xFF000000, .surface = 0xFF000000, .oled = false }, // Extreme black (non-OLED)
+        .{ .accent = 0xFF4285F4, .surface = 0xFF121212, .oled = false }, // Dark surface (non-OLED)
+        .{ .accent = 0xFFFFFFFF, .surface = 0xFFFFFFFF, .oled = true }, // Extreme white (OLED)
+        .{ .accent = 0xFFFFFFFF, .surface = 0xFFFFFFFF, .oled = false }, // Extreme white (non-OLED)
+        .{ .accent = 0x00000000, .surface = 0xFF202226, .oled = true }, // Unset accent, valid surface
+        .{ .accent = 0xFF4285F4, .surface = 0x00000000, .oled = false }, // Valid accent, unset surface, non-OLED
+    };
+
+    const checked_kinds = [_]tokens.ComponentKind{ .button, .toggle };
+    for (cases) |c| {
+        const tbl = theme.fromOsDynamicColors(c.accent, c.surface, c.oled);
+        try std.testing.expect(tbl.isValid());
+
+        const base_srgb = tbl.bg_base.toSrgb();
+        const surf_srgb = tbl.bg_surface.toSrgb();
+        if (c.oled) {
+            try std.testing.expectEqual(@as(f32, 0.0), base_srgb[0]);
+            try std.testing.expectEqual(@as(f32, 0.0), base_srgb[1]);
+            try std.testing.expectEqual(@as(f32, 0.0), base_srgb[2]);
+            try std.testing.expect(tbl.bg_surface.l >= 0.159 and tbl.bg_surface.l <= 0.241);
+        } else {
+            try std.testing.expect(theme.relativeLuminance(base_srgb) < 0.08);
+            try std.testing.expect(tbl.bg_surface.l >= 0.229 and tbl.bg_surface.l <= 0.271);
+        }
+
+        // Strict dark surface hierarchy: bg_base < bg_surface < bg_elevated
+        try std.testing.expect(tbl.bg_base.l < tbl.bg_surface.l);
+        try std.testing.expect(tbl.bg_surface.l < tbl.bg_elevated.l);
+
+        // Guaranteed >= 7.0:1 primary text contrast on base and surface
+        const text_srgb = tbl.text_primary.toSrgb();
+        try std.testing.expect(theme.contrastRatio(text_srgb, base_srgb) >= 7.0);
+        try std.testing.expect(theme.contrastRatio(text_srgb, surf_srgb) >= 7.0);
+
+        // Checked control contrast >= 4.5:1
+        for (checked_kinds) |k| {
+            const st = tbl.resolve(k, .{ .checked = true });
+            try std.testing.expect(theme.contrastRatio(st.text, st.fill) >= 4.5);
+        }
+    }
 }
